@@ -32,6 +32,7 @@ class PartDetection:
     box: tuple[float, float, float, float]
     confidence: float
     polygon: tuple[tuple[float, float], ...] | None = None
+    clip_to_box: bool = False
 
 
 def _normalise(value: object) -> str:
@@ -101,6 +102,25 @@ def _deduplicate(parts: list[PartDetection]) -> list[PartDetection]:
     return kept
 
 
+def _side_window_prompts(doors: list[PartDetection]) -> list[PartDetection]:
+    doors = _deduplicate(doors)
+    if not doors:
+        raise PipelineError(
+            "missing_masks",
+            "Part detection did not find doors needed to segment side windows",
+        )
+    return [
+        PartDetection(
+            "windows",
+            (x1, y1, x2, y1 + (y2 - y1) * 0.45),
+            0,
+            clip_to_box=True,
+        )
+        for door in doors
+        for x1, y1, x2, y2 in (door.box,)
+    ]
+
+
 def validate_view(view: ViewName, parts: list[PartDetection]) -> None:
     if (
         view in {"front", "rear"}
@@ -147,6 +167,7 @@ def detect_car_and_parts(
     car_x1, car_y1, car_x2, car_y2 = car.box
     crop = image.crop(car.box)
     parts = []
+    doors = []
 
     try:
         with _YOLO_LOCK:
@@ -176,7 +197,8 @@ def detect_car_and_parts(
             specialised_result.boxes.cls.cpu().tolist(),
             polygons,
         ):
-            group = _part_group(specialised_result.names[int(class_id)])
+            class_name = _normalise(specialised_result.names[int(class_id)])
+            group = _part_group(class_name)
             x1, y1, x2, y2 = (
                 max(car_x1, min(car_x2, car_x1 + float(xyxy[0]))),
                 max(car_y1, min(car_y2, car_y1 + float(xyxy[1]))),
@@ -185,6 +207,19 @@ def detect_car_and_parts(
             )
             area = (x2 - x1) * (y2 - y1)
             area_limit = 0.7 if group == "bumper" else MAX_PART_AREA_RATIO
+            if (
+                class_name.endswith("_door")
+                and x2 > x1
+                and y2 > y1
+                and area <= car.area * MAX_PART_AREA_RATIO
+            ):
+                doors.append(
+                    PartDetection(
+                        "doors",
+                        (x1, y1, x2, y2),
+                        float(confidence),
+                    )
+                )
             polygon = (
                 tuple(
                     (
@@ -270,19 +305,5 @@ def detect_car_and_parts(
     if view in {"left", "right"} and not any(
         part.group == "windows" for part in parts
     ):
-        width, height = car_x2 - car_x1, car_y2 - car_y1
-        # ponytail: three SAM prompts cover side glass absent from the 23 classes.
-        for left, right in ((0.13, 0.42), (0.36, 0.68), (0.62, 0.94)):
-            parts.append(
-                PartDetection(
-                    "windows",
-                    (
-                        car_x1 + width * left,
-                        car_y1 + height * 0.05,
-                        car_x1 + width * right,
-                        car_y1 + height * 0.44,
-                    ),
-                    0,
-                )
-            )
+        parts.extend(_side_window_prompts(doors))
     return car, parts

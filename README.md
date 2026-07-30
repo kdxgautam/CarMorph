@@ -12,8 +12,9 @@ non-paintable parts.
 3. Roboflow SAM 2 refines the full-car and box-prompt masks.
 4. OpenCV cleans the masks and subtracts windows, wheels, tyres, lights, plates,
    grille, and trim from the full-car mask.
-5. The original image, masks, and luminance map are stored under one content
-   hash. Uploading identical bytes reuses them without rerunning segmentation.
+5. The original image, masks, and luminance map are stored under one
+   image-and-view content hash. Uploading identical bytes with the same view
+   reuses them without rerunning segmentation.
 6. The deterministic preview recolours only the paintable-body mask.
 7. The FLUX route asks the official FLUX.1 Kontext dev Space to edit the car,
    restores the original luminance pattern, normalizes the median body colour
@@ -157,8 +158,8 @@ open "data/processed/${ASSET_ID}/masks/wheels.png"
 open "data/processed/${ASSET_ID}/masks/lights.png"
 ```
 
-Repeating the upload command with identical image bytes returns the existing
-asset and does not rerun YOLO or SAM.
+Repeating the upload command with identical image bytes and view returns the
+existing asset and does not rerun YOLO or SAM.
 
 ### 3. Test deterministic recolouring
 
@@ -289,6 +290,11 @@ data/
 For a SAM cold start, keep `ROBOFLOW_TIMEOUT_SECONDS=180` and fully restart
 Uvicorn after changing `.env`. For FLUX quota exhaustion, wait for the Hugging
 Face quota to reset; repeated cached colours do not consume additional quota.
+
+For side views where the car-parts model does not detect glass directly, the
+pipeline creates tight SAM prompts from the upper 45% of detected doors. It
+returns `missing_masks` instead of using broad prompts when no usable door is
+detected.
 
 ## Model and deployment notes
 

@@ -13,6 +13,7 @@ from app.detection import (
     CarDetection,
     PartDetection,
     _deduplicate,
+    _side_window_prompts,
     select_primary_car,
     validate_view,
 )
@@ -26,6 +27,7 @@ from app.image_ops import (
     recolour,
 )
 from app.roboflow import segment_boxes
+from app.pipeline import _asset_id, _clip_fallback_mask
 
 
 class PipelineTest(unittest.TestCase):
@@ -117,6 +119,52 @@ class PipelineTest(unittest.TestCase):
         weaker = PartDetection("windows", (5, 5, 105, 105), 0.5)
         wheel = PartDetection("wheels", (5, 5, 105, 105), 0.8)
         self.assertEqual(_deduplicate([weaker, wheel, stronger]), [stronger, wheel])
+
+    def test_side_windows_use_upper_deduplicated_doors(self) -> None:
+        front = PartDetection("doors", (10, 20, 50, 100), 0.9)
+        duplicate = PartDetection("doors", (12, 22, 52, 102), 0.5)
+        rear = PartDetection("doors", (60, 20, 100, 100), 0.8)
+
+        prompts = _side_window_prompts([duplicate, rear, front])
+
+        self.assertEqual(
+            [prompt.box for prompt in prompts],
+            [(10, 20, 50, 56), (60, 20, 100, 56)],
+        )
+        self.assertTrue(
+            all(
+                prompt.group == "windows"
+                and prompt.confidence == 0
+                and prompt.clip_to_box
+                for prompt in prompts
+            )
+        )
+
+    def test_side_windows_require_a_door(self) -> None:
+        with self.assertRaisesRegex(PipelineError, "doors"):
+            _side_window_prompts([])
+
+    def test_fallback_masks_are_clipped_to_their_prompt(self) -> None:
+        mask = np.full((100, 100), 255, np.uint8)
+        prompt = PartDetection("windows", (20, 10, 60, 40), 0, clip_to_box=True)
+
+        clipped = _clip_fallback_mask(mask, prompt)
+
+        self.assertEqual(clipped[9, 20], 0)
+        self.assertEqual(clipped[10, 20], 255)
+        self.assertEqual(clipped[39, 59], 255)
+        self.assertEqual(clipped[40, 60], 0)
+        self.assertIs(
+            _clip_fallback_mask(
+                mask,
+                PartDetection("windows", (20, 10, 60, 40), 0),
+            ),
+            mask,
+        )
+
+    def test_asset_ids_include_view(self) -> None:
+        self.assertEqual(_asset_id(b"image", "left"), _asset_id(b"image", "left"))
+        self.assertNotEqual(_asset_id(b"image", "left"), _asset_id(b"image", "right"))
 
     def test_side_image_rejects_front_view(self) -> None:
         wheels = [

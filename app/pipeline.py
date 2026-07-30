@@ -13,7 +13,7 @@ from app.config import (
     REQUIRED_PART_GROUPS_BY_VIEW,
     Settings,
 )
-from app.detection import detect_car_and_parts
+from app.detection import PartDetection, detect_car_and_parts
 from app.errors import PipelineError
 from app.image_ops import (
     build_body_mask,
@@ -31,7 +31,26 @@ from app.schemas import AssetBundle, BoundingBox, ViewName
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"2"
+PIPELINE_VERSION = b"3"
+
+
+def _asset_id(source: bytes, view: ViewName) -> str:
+    return hashlib.sha256(
+        PIPELINE_VERSION + b"\0" + view.encode() + b"\0" + source
+    ).hexdigest()
+
+
+def _clip_fallback_mask(
+    mask: np.ndarray, part: PartDetection | None
+) -> np.ndarray:
+    if part is None or not part.clip_to_box:
+        return mask
+    x1, y1, x2, y2 = map(round, part.box)
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(mask.shape[1], x2), min(mask.shape[0], y2)
+    clipped = np.zeros_like(mask)
+    clipped[y1:y2, x1:x2] = mask[y1:y2, x1:x2]
+    return clipped
 
 
 def _read_result(metadata: Path) -> AssetBundle:
@@ -53,7 +72,7 @@ def _read_result(metadata: Path) -> AssetBundle:
 
 
 def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBundle:
-    asset_id = hashlib.sha256(PIPELINE_VERSION + b"\0" + source).hexdigest()
+    asset_id = _asset_id(source, view)
     final = settings.storage_root / asset_id
 
     with _PROCESS_LOCK:
@@ -84,16 +103,20 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 )
 
             prompts = [tuple(float(value) for value in car.box)]
-            prompt_groups = ["full_car"]
+            prompt_parts: list[PartDetection | None] = [None]
             for part in parts:
                 if part.polygon is None:
                     prompts.append(part.box)
-                    prompt_groups.append(part.group)
+                    prompt_parts.append(part)
 
             polygons = segment_boxes(image_jpeg, prompts, settings)
             masks_by_group: dict[str, list[np.ndarray]] = defaultdict(list)
-            for group, mask_polygons in zip(prompt_groups, polygons):
-                mask = polygons_to_mask(mask_polygons, image.size)
+            for part, mask_polygons in zip(prompt_parts, polygons):
+                group = part.group if part is not None else "full_car"
+                mask = _clip_fallback_mask(
+                    polygons_to_mask(mask_polygons, image.size),
+                    part,
+                )
                 masks_by_group[group].append(
                     clean_mask(
                         mask,
