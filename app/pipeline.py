@@ -1,0 +1,211 @@
+import hashlib
+import shutil
+import tempfile
+from collections import defaultdict
+from pathlib import Path
+from threading import Lock
+
+import numpy as np
+
+from app.config import (
+    NON_PAINTABLE_PART_GROUPS,
+    OUTPUT_PART_GROUPS,
+    REQUIRED_PART_GROUPS_BY_VIEW,
+    Settings,
+)
+from app.detection import detect_car_and_parts
+from app.errors import PipelineError
+from app.image_ops import (
+    build_body_mask,
+    clean_mask,
+    combine_masks,
+    dark_trim_mask,
+    encode_jpeg,
+    load_image,
+    polygons_to_mask,
+    save_base_assets,
+    save_mask,
+)
+from app.roboflow import segment_boxes
+from app.schemas import AssetBundle, BoundingBox, ViewName
+
+# ponytail: process-local lock; use a shared job/lock store when running workers.
+_PROCESS_LOCK = Lock()
+PIPELINE_VERSION = b"2"
+
+
+def _read_result(metadata: Path) -> AssetBundle:
+    try:
+        result = AssetBundle.model_validate_json(metadata.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise PipelineError(
+            "invalid_stored_assets", "Stored asset metadata is invalid", 500
+        ) from exc
+    expected = {
+        result.source_image,
+        result.original_image,
+        result.luminance_map,
+        *result.masks.values(),
+    }
+    if any(not (metadata.parent / path).is_file() for path in expected):
+        raise PipelineError("missing_masks", "A stored image or mask is missing", 500)
+    return result
+
+
+def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBundle:
+    asset_id = hashlib.sha256(PIPELINE_VERSION + b"\0" + source).hexdigest()
+    final = settings.storage_root / asset_id
+
+    with _PROCESS_LOCK:
+        if (final / "metadata.json").is_file():
+            return _read_result(final / "metadata.json")
+
+        try:
+            image, suffix = load_image(source)
+        except (OSError, ValueError) as exc:
+            raise PipelineError("invalid_image", str(exc), 400) from exc
+
+        settings.storage_root.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(dir=settings.storage_root))
+        try:
+            image_jpeg = encode_jpeg(image)
+            car, parts = detect_car_and_parts(image, settings, view)
+            grouped_parts = defaultdict(list)
+            for part in parts:
+                grouped_parts[part.group].append(part)
+
+            required_parts = REQUIRED_PART_GROUPS_BY_VIEW[view]
+            missing = sorted(required_parts - grouped_parts.keys())
+            if missing:
+                raise PipelineError(
+                    "missing_masks",
+                    "Part detection did not find required regions: "
+                    + ", ".join(missing),
+                )
+
+            prompts = [tuple(float(value) for value in car.box)]
+            prompt_groups = ["full_car"]
+            for part in parts:
+                if part.polygon is None:
+                    prompts.append(part.box)
+                    prompt_groups.append(part.group)
+
+            polygons = segment_boxes(image_jpeg, prompts, settings)
+            masks_by_group: dict[str, list[np.ndarray]] = defaultdict(list)
+            for group, mask_polygons in zip(prompt_groups, polygons):
+                mask = polygons_to_mask(mask_polygons, image.size)
+                masks_by_group[group].append(
+                    clean_mask(
+                        mask,
+                        image.size,
+                        settings.mask_kernel_size,
+                        settings.mask_feather_radius,
+                    )
+                )
+            for part in parts:
+                if part.polygon is not None:
+                    masks_by_group[part.group].append(
+                        clean_mask(
+                            polygons_to_mask([part.polygon], image.size),
+                            image.size,
+                            settings.mask_kernel_size,
+                            settings.mask_feather_radius,
+                        )
+                    )
+
+            full_car = combine_masks(masks_by_group.pop("full_car"))
+            full_car = np.maximum(
+                full_car,
+                combine_masks(
+                    [mask for masks in masks_by_group.values() for mask in masks]
+                ),
+            )
+            part_masks = {}
+            for group, masks in masks_by_group.items():
+                mask = np.minimum(combine_masks(masks), full_car)
+                if np.any(mask >= 128):
+                    part_masks[group] = mask
+            missing_masks = sorted(required_parts - part_masks.keys())
+            if missing_masks:
+                raise PipelineError(
+                    "missing_masks",
+                    "Segmentation did not produce required masks: "
+                    + ", ".join(missing_masks),
+                    502,
+                )
+
+            part_masks["dark_trim"] = dark_trim_mask(
+                image,
+                full_car,
+                car.box,
+                settings.mask_kernel_size,
+                settings.mask_feather_radius,
+            )
+            absent_output_masks = sorted(OUTPUT_PART_GROUPS - part_masks.keys())
+            for group in absent_output_masks:
+                part_masks[group] = np.zeros_like(full_car)
+
+            body = build_body_mask(
+                full_car,
+                [
+                    mask
+                    for group, mask in part_masks.items()
+                    if group in NON_PAINTABLE_PART_GROUPS
+                ],
+                settings.mask_kernel_size,
+                settings.mask_feather_radius,
+            )
+
+            masks_dir = work / "masks"
+            masks_dir.mkdir()
+            save_mask(full_car, masks_dir / "full-car.png")
+            save_mask(body, masks_dir / "paintable-body.png")
+            mask_paths = {
+                "full_car": "masks/full-car.png",
+                "paintable_body": "masks/paintable-body.png",
+            }
+            for group, mask in sorted(part_masks.items()):
+                filename = f"{group}.png"
+                save_mask(mask, masks_dir / filename)
+                mask_paths[group] = f"masks/{filename}"
+
+            (work / f"source.{suffix}").write_bytes(source)
+            save_base_assets(image, work)
+            result = AssetBundle(
+                asset_id=asset_id,
+                view=view,
+                width=image.width,
+                height=image.height,
+                car_bbox=BoundingBox(
+                    x1=car.box[0],
+                    y1=car.box[1],
+                    x2=car.box[2],
+                    y2=car.box[3],
+                    confidence=car.confidence,
+                ),
+                source_image=f"source.{suffix}",
+                original_image="original.webp",
+                luminance_map="luminance-map.png",
+                masks=mask_paths,
+                models={
+                    "yolo_world": settings.yolo_model_id,
+                    "car_parts": settings.car_parts_model_id,
+                    "sam2": settings.roboflow_sam2_version_id,
+                },
+                warnings=(
+                    [
+                        "Parts not visible or detected; empty masks stored: "
+                        + ", ".join(absent_output_masks)
+                    ]
+                    if absent_output_masks
+                    else []
+                ),
+            )
+            (work / "metadata.json").write_text(
+                result.model_dump_json(indent=2), encoding="utf-8"
+            )
+            work.rename(final)
+            return result
+        except Exception:
+            shutil.rmtree(work, ignore_errors=True)
+            raise

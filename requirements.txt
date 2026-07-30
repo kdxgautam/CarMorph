@@ -1,0 +1,10 @@
+fastapi==0.140.13
+numpy==2.3.5
+opencv-python==4.10.0.84
+Pillow==12.3.0
+python-multipart==0.0.32
+requests==2.34.2
+ultralytics==8.4.110
+clip @ git+https://github.com/ultralytics/CLIP.git@c4b6ea0932a2c0f39a0fa528af5ec4982ff15cab
+uvicorn==0.52.0
+gradio_client==2.6.0
