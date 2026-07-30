@@ -32,7 +32,7 @@ from app.schemas import AssetBundle, BoundingBox, ViewName
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"6"
+PIPELINE_VERSION = b"7"
 
 
 def _asset_id(source: bytes, view: ViewName) -> str:
@@ -62,17 +62,8 @@ def _clip_fallback_mask(
 def _refine_side_windows(
     windows: np.ndarray,
     mirrors: np.ndarray | None,
-    car_width: int,
 ) -> np.ndarray:
     windows = np.where(windows >= 128, 255, 0).astype(np.uint8)
-    kernel_width = max(3, round(car_width * 0.06))
-    if kernel_width % 2 == 0:
-        kernel_width += 1
-    windows = cv2.morphologyEx(
-        windows,
-        cv2.MORPH_CLOSE,
-        cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_width, 3)),
-    )
     windows = cv2.dilate(
         windows,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
@@ -190,7 +181,6 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 part_masks["windows"] = _refine_side_windows(
                     part_masks["windows"],
                     part_masks.get("mirrors"),
-                    car.box[2] - car.box[0],
                 )
 
             part_masks["dark_trim"] = dark_trim_mask(

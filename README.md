@@ -298,6 +298,9 @@ glass, the inner seed itself provides a conservative fallback. The pipeline
 returns `missing_masks` instead of using broad prompts when no usable door is
 detected.
 
+Window pillars remain part of the paintable-body mask; only the glass and its
+immediate edge are excluded.
+
 The luminance-based `dark_trim` mask is stored for inspection but is not
 subtracted from the paintable body because deep paint shadows can otherwise be
 mistaken for plastic trim. Detector-produced grille and trim masks remain

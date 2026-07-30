@@ -180,16 +180,16 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(_asset_id(b"image", "left"), _asset_id(b"image", "left"))
         self.assertNotEqual(_asset_id(b"image", "left"), _asset_id(b"image", "right"))
 
-    def test_side_window_trim_is_joined_without_swallowing_mirrors(self) -> None:
+    def test_side_window_pillars_stay_paintable(self) -> None:
         windows = np.zeros((80, 100), np.uint8)
         windows[20:60, 10:45] = 255
         windows[20:60, 50:90] = 255
         mirrors = np.zeros_like(windows)
         mirrors[30:40, 10:20] = 255
 
-        refined = _refine_side_windows(windows, mirrors, 100)
+        refined = _refine_side_windows(windows, mirrors)
 
-        self.assertEqual(refined[40, 47], 255)
+        self.assertEqual(refined[40, 47], 0)
         self.assertEqual(refined[35, 15], 0)
         self.assertEqual(refined[19, 30], 255)
         self.assertNotIn("dark_trim", NON_PAINTABLE_PART_GROUPS)
