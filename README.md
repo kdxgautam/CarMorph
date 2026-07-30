@@ -293,8 +293,10 @@ Face quota to reset; repeated cached colours do not consume additional quota.
 
 For side views where the car-parts model does not detect glass directly, the
 pipeline creates SAM prompts inside the expected glass area of detected doors
-and clips the results to the upper-door bounds. It returns `missing_masks`
-instead of using broad prompts when no usable door is detected.
+and clips the results to the upper-door bounds. If SAM misses transparent
+glass, the inner seed itself provides a conservative fallback. The pipeline
+returns `missing_masks` instead of using broad prompts when no usable door is
+detected.
 
 The luminance-based `dark_trim` mask is stored for inspection but is not
 subtracted from the paintable body because deep paint shadows can otherwise be

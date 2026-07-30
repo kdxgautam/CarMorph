@@ -163,6 +163,11 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(clipped[10, 20], 255)
         self.assertEqual(clipped[39, 59], 255)
         self.assertEqual(clipped[40, 60], 0)
+        sparse = np.zeros_like(mask)
+        sparse[15, 25] = 255
+        recovered = _clip_fallback_mask(sparse, prompt)
+        self.assertEqual(recovered[20, 30], 255)
+        self.assertEqual(recovered[9, 20], 0)
         self.assertIs(
             _clip_fallback_mask(
                 mask,

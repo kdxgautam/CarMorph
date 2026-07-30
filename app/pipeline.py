@@ -32,7 +32,7 @@ from app.schemas import AssetBundle, BoundingBox, ViewName
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"5"
+PIPELINE_VERSION = b"6"
 
 
 def _asset_id(source: bytes, view: ViewName) -> str:
@@ -51,6 +51,11 @@ def _clip_fallback_mask(
     x2, y2 = min(mask.shape[1], x2), min(mask.shape[0], y2)
     clipped = np.zeros_like(mask)
     clipped[y1:y2, x1:x2] = mask[y1:y2, x1:x2]
+    prompt_x1, prompt_y1, prompt_x2, prompt_y2 = map(round, part.box)
+    prompt = clipped[prompt_y1:prompt_y2, prompt_x1:prompt_x2]
+    # ponytail: geometric seed fallback; replace if transparent glass gets a detector.
+    if prompt.size and np.mean(prompt >= 128) < 0.5:
+        clipped[prompt_y1:prompt_y2, prompt_x1:prompt_x2] = 255
     return clipped
 
 
