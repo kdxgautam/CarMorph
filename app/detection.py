@@ -32,7 +32,7 @@ class PartDetection:
     box: tuple[float, float, float, float]
     confidence: float
     polygon: tuple[tuple[float, float], ...] | None = None
-    clip_to_box: bool = False
+    clip_box: tuple[float, float, float, float] | None = None
 
 
 def _normalise(value: object) -> str:
@@ -112,9 +112,14 @@ def _side_window_prompts(doors: list[PartDetection]) -> list[PartDetection]:
     return [
         PartDetection(
             "windows",
-            (x1, y1, x2, y1 + (y2 - y1) * 0.45),
+            (
+                x1 + (x2 - x1) * 0.2,
+                y1 + (y2 - y1) * 0.08,
+                x2 - (x2 - x1) * 0.05,
+                y1 + (y2 - y1) * 0.32,
+            ),
             0,
-            clip_to_box=True,
+            clip_box=(x1, y1, x2, y1 + (y2 - y1) * 0.45),
         )
         for door in doors
         for x1, y1, x2, y2 in (door.box,)

@@ -292,9 +292,14 @@ Uvicorn after changing `.env`. For FLUX quota exhaustion, wait for the Hugging
 Face quota to reset; repeated cached colours do not consume additional quota.
 
 For side views where the car-parts model does not detect glass directly, the
-pipeline creates tight SAM prompts from the upper 45% of detected doors. It
-returns `missing_masks` instead of using broad prompts when no usable door is
-detected.
+pipeline creates SAM prompts inside the expected glass area of detected doors
+and clips the results to the upper-door bounds. It returns `missing_masks`
+instead of using broad prompts when no usable door is detected.
+
+The luminance-based `dark_trim` mask is stored for inspection but is not
+subtracted from the paintable body because deep paint shadows can otherwise be
+mistaken for plastic trim. Detector-produced grille and trim masks remain
+excluded.
 
 ## Model and deployment notes
 

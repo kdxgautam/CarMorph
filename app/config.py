@@ -80,7 +80,6 @@ NON_PAINTABLE_PART_GROUPS = {
     "lights",
     "grille",
     "trim",
-    "dark_trim",
 }
 REQUIRED_PART_GROUPS_BY_VIEW = {
     "front": {"windows", "plate"},

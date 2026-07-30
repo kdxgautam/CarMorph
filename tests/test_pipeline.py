@@ -17,6 +17,7 @@ from app.detection import (
     select_primary_car,
     validate_view,
 )
+from app.config import NON_PAINTABLE_PART_GROUPS
 from app.errors import PipelineError
 from app.flux import FluxSettings, render_flux
 from app.image_ops import (
@@ -27,7 +28,7 @@ from app.image_ops import (
     recolour,
 )
 from app.roboflow import segment_boxes
-from app.pipeline import _asset_id, _clip_fallback_mask
+from app.pipeline import _asset_id, _clip_fallback_mask, _refine_side_windows
 
 
 class PipelineTest(unittest.TestCase):
@@ -129,15 +130,18 @@ class PipelineTest(unittest.TestCase):
 
         self.assertEqual(
             [prompt.box for prompt in prompts],
-            [(10, 20, 50, 56), (60, 20, 100, 56)],
+            [(18, 26.4, 48, 45.6), (68, 26.4, 98, 45.6)],
         )
         self.assertTrue(
             all(
                 prompt.group == "windows"
                 and prompt.confidence == 0
-                and prompt.clip_to_box
                 for prompt in prompts
             )
+        )
+        self.assertEqual(
+            [prompt.clip_box for prompt in prompts],
+            [(10, 20, 50, 56), (60, 20, 100, 56)],
         )
 
     def test_side_windows_require_a_door(self) -> None:
@@ -146,7 +150,12 @@ class PipelineTest(unittest.TestCase):
 
     def test_fallback_masks_are_clipped_to_their_prompt(self) -> None:
         mask = np.full((100, 100), 255, np.uint8)
-        prompt = PartDetection("windows", (20, 10, 60, 40), 0, clip_to_box=True)
+        prompt = PartDetection(
+            "windows",
+            (25, 15, 55, 30),
+            0,
+            clip_box=(20, 10, 60, 40),
+        )
 
         clipped = _clip_fallback_mask(mask, prompt)
 
@@ -165,6 +174,20 @@ class PipelineTest(unittest.TestCase):
     def test_asset_ids_include_view(self) -> None:
         self.assertEqual(_asset_id(b"image", "left"), _asset_id(b"image", "left"))
         self.assertNotEqual(_asset_id(b"image", "left"), _asset_id(b"image", "right"))
+
+    def test_side_window_trim_is_joined_without_swallowing_mirrors(self) -> None:
+        windows = np.zeros((80, 100), np.uint8)
+        windows[20:60, 10:45] = 255
+        windows[20:60, 50:90] = 255
+        mirrors = np.zeros_like(windows)
+        mirrors[30:40, 10:20] = 255
+
+        refined = _refine_side_windows(windows, mirrors, 100)
+
+        self.assertEqual(refined[40, 47], 255)
+        self.assertEqual(refined[35, 15], 0)
+        self.assertEqual(refined[19, 30], 255)
+        self.assertNotIn("dark_trim", NON_PAINTABLE_PART_GROUPS)
 
     def test_side_image_rejects_front_view(self) -> None:
         wheels = [
