@@ -14,6 +14,9 @@ from app.config import Settings
 from app.errors import PipelineError
 from app.flux import FluxSettings, render_flux
 from app.image_ops import recolour
+from app.modifications.instructions import merge_instruction
+from app.modifications.planner import choose_renderer
+from app.modifications.schemas import parse_modification
 from app.pipeline import process_view
 from app.schemas import AssetBundle, ViewName
 
@@ -129,5 +132,30 @@ def render(
         headers={
             "Cache-Control": "no-store",
             "X-Render-Cached": str(cached).lower(),
+        },
+    )
+
+
+@app.post("/cars/{asset_id}/customise")
+async def customise(asset_id: str, request: Request) -> FileResponse:
+    directory, metadata = _asset(asset_id)
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise PipelineError("invalid_request", "Request body must be JSON") from exc
+    modification = merge_instruction(parse_modification(body))
+    result = choose_renderer(modification).render(
+        directory=directory,
+        metadata=metadata,
+        modification=modification,
+    )
+    return FileResponse(
+        result.path,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Render-Cached": str(result.cached).lower(),
+            "X-Renderer-Used": result.renderer,
+            "X-Quality-Status": result.quality_status,
         },
     )

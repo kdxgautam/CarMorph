@@ -69,6 +69,8 @@ OUTPUT_PART_GROUPS = {
     "windows",
     "plate",
     "lights",
+    "grille",
+    "trim",
     "bumper",
     "mirrors",
     "dark_trim",

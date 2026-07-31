@@ -19,5 +19,5 @@ dependencies = [
     "uvicorn==0.52.0",
 ]
 
-[tool.setuptools]
-packages = ["app"]
+[tool.setuptools.packages.find]
+include = ["app*"]

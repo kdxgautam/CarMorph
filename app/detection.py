@@ -3,9 +3,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
+from typing import Any
 
 from PIL import Image
-from ultralytics import YOLO, YOLOWorld
 
 from app.config import PART_GROUPS, YOLO_PART_PROMPTS_BY_VIEW, Settings
 from app.errors import PipelineError
@@ -48,20 +48,24 @@ def _part_group(class_name: object) -> str | None:
 
 
 @lru_cache(maxsize=4)
-def _load_model(model_id: str, classes: tuple[str, ...]) -> YOLOWorld:
+def _load_model(model_id: str, classes: tuple[str, ...]) -> Any:
+    from ultralytics import YOLOWorld
+
     model = YOLOWorld(model_id)
     model.set_classes(list(classes))
     return model
 
 
 @lru_cache(maxsize=1)
-def _load_parts_model(model_id: str) -> YOLO:
+def _load_parts_model(model_id: str) -> Any:
     if not Path(model_id).is_file():
         raise PipelineError(
             "configuration_error",
             f"Car-parts model weights are missing: {model_id}",
             503,
         )
+    from ultralytics import YOLO
+
     return YOLO(model_id)
 
 

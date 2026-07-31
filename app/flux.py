@@ -13,6 +13,8 @@ from PIL import Image, UnidentifiedImageError
 
 from app.errors import PipelineError
 from app.image_ops import parse_colour
+from app.modifications.prompts import build_surface_prompt
+from app.modifications.schemas import SurfaceEditRequest
 from app.schemas import AssetBundle
 
 FLUX_RENDER_VERSION = "3"
@@ -103,7 +105,7 @@ class FluxSettings:
         return settings
 
 
-def _composite(
+def composite_plain_colour(
     original: Image.Image,
     generated: Image.Image,
     mask: Image.Image,
@@ -133,6 +135,88 @@ def _composite(
         np.rint(np.clip(structure_preserved * gains, 0, 255)).astype(np.uint8)
     )
     return Image.composite(colour_corrected, original, mask)
+
+
+def composite_design(
+    original: Image.Image,
+    generated: Image.Image,
+    mask: Image.Image,
+) -> Image.Image:
+    original = original.convert("RGB")
+    mask = mask.convert("L")
+    if mask.size != original.size:
+        raise PipelineError(
+            "mask_dimension_mismatch",
+            "Body mask dimensions do not match the original image",
+            500,
+        )
+    if not mask.getbbox():
+        raise PipelineError("missing_masks", "Paintable-body mask is empty", 500)
+    generated = generated.convert("RGB").resize(original.size, Image.Resampling.LANCZOS)
+    original_pixels = np.asarray(original)
+    generated_pixels = np.asarray(generated)
+    original_lab = cv2.cvtColor(original_pixels, cv2.COLOR_RGB2LAB)
+    generated_lab = cv2.cvtColor(generated_pixels, cv2.COLOR_RGB2LAB)
+    generated_lab[:, :, 0] = original_lab[:, :, 0]
+    return Image.composite(
+        Image.fromarray(cv2.cvtColor(generated_lab, cv2.COLOR_LAB2RGB)),
+        original,
+        mask,
+    )
+
+
+class HuggingFaceFluxKontextProvider:
+    name = "huggingface_flux_kontext"
+
+    def edit(
+        self,
+        *,
+        image_path: Path,
+        prompt: str,
+        settings: FluxSettings,
+    ) -> Image.Image:
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                client = Client(
+                    settings.space,
+                    token=settings.token,
+                    verbose=False,
+                    download_files=temporary,
+                    httpx_kwargs={"timeout": settings.timeout},
+                )
+                response = client.predict(
+                    input_image=handle_file(image_path),
+                    prompt=prompt,
+                    seed=settings.seed,
+                    randomize_seed=False,
+                    guidance_scale=settings.guidance_scale,
+                    steps=settings.steps,
+                    api_name="/infer",
+                )
+                if (
+                    not isinstance(response, (tuple, list))
+                    or not response
+                    or not isinstance(response[0], (str, Path))
+                ):
+                    raise PipelineError(
+                        "invalid_flux_response",
+                        "FLUX returned an invalid response",
+                        502,
+                    )
+                with Image.open(response[0]) as opened:
+                    return opened.convert("RGB")
+        except PipelineError:
+            raise
+        except (OSError, UnidentifiedImageError) as exc:
+            raise PipelineError(
+                "invalid_flux_response", "FLUX returned an invalid image", 502
+            ) from exc
+        except Exception as exc:
+            raise PipelineError(
+                "flux_unavailable",
+                "FLUX is unavailable, queued, or its Hugging Face quota is exhausted",
+                503,
+            ) from exc
 
 
 def render_flux(
@@ -175,51 +259,19 @@ def render_flux(
         if not mask.getbbox():
             raise PipelineError("missing_masks", "Paintable-body mask is empty", 500)
 
-        prompt = (
-            f"Change only the exterior painted body panels of this exact car "
-            f"to glossy {_colour_name(rgb)} automotive paint matching RGB {rgb} and "
-            f"hexadecimal #{colour}. Keep the exact same car, body shape, doors, "
-            "handles, panel gaps, lights, windows, wheels, trim, badges, reflections, "
-            "background, lighting, and camera position. Do not add or remove anything."
+        prompt = build_surface_prompt(
+            SurfaceEditRequest(body_colour=f"#{colour}", renderer="generative")
         )
 
         try:
-            with tempfile.TemporaryDirectory() as temporary:
-                client = Client(
-                    settings.space,
-                    token=settings.token,
-                    verbose=False,
-                    download_files=temporary,
-                    httpx_kwargs={"timeout": settings.timeout},
-                )
-                response = client.predict(
-                    input_image=handle_file(directory / metadata.original_image),
-                    prompt=prompt,
-                    seed=settings.seed,
-                    randomize_seed=False,
-                    guidance_scale=settings.guidance_scale,
-                    steps=settings.steps,
-                    api_name="/infer",
-                )
-                if (
-                    not isinstance(response, (tuple, list))
-                    or not response
-                    or not isinstance(response[0], (str, Path))
-                ):
-                    raise PipelineError(
-                        "invalid_flux_response",
-                        "FLUX returned an invalid response",
-                        502,
-                    )
-                with Image.open(response[0]) as opened:
-                    generated = opened.convert("RGB")
-                result = _composite(original, generated, mask, rgb)
+            generated = HuggingFaceFluxKontextProvider().edit(
+                image_path=directory / metadata.original_image,
+                prompt=prompt,
+                settings=settings,
+            )
+            result = composite_plain_colour(original, generated, mask, rgb)
         except PipelineError:
             raise
-        except (OSError, UnidentifiedImageError) as exc:
-            raise PipelineError(
-                "invalid_flux_response", "FLUX returned an invalid image", 502
-            ) from exc
         except Exception as exc:
             raise PipelineError(
                 "flux_unavailable",

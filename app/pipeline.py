@@ -17,7 +17,7 @@ from app.config import (
 from app.detection import PartDetection, detect_car_and_parts
 from app.errors import PipelineError
 from app.image_ops import (
-    build_body_mask,
+    build_paintability_masks,
     clean_mask,
     combine_masks,
     dark_trim_mask,
@@ -26,13 +26,14 @@ from app.image_ops import (
     polygons_to_mask,
     save_base_assets,
     save_mask,
+    uncertain_dark_region_mask,
 )
 from app.roboflow import segment_boxes
-from app.schemas import AssetBundle, BoundingBox, ViewName
+from app.schemas import AssetBundle, BoundingBox, PaintabilityReport, ViewName
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"7"
+PIPELINE_VERSION = b"8"
 
 
 def _asset_id(source: bytes, view: ViewName) -> str:
@@ -190,17 +191,26 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 settings.mask_kernel_size,
                 settings.mask_feather_radius,
             )
+            uncertain_dark = uncertain_dark_region_mask(
+                image,
+                full_car,
+                car.box,
+                settings.mask_kernel_size,
+                settings.mask_feather_radius,
+            )
             absent_output_masks = sorted(OUTPUT_PART_GROUPS - part_masks.keys())
             for group in absent_output_masks:
                 part_masks[group] = np.zeros_like(full_car)
 
-            body = build_body_mask(
+            protected_groups = [
+                mask
+                for group, mask in part_masks.items()
+                if group in NON_PAINTABLE_PART_GROUPS
+            ]
+            paintability = build_paintability_masks(
                 full_car,
-                [
-                    mask
-                    for group, mask in part_masks.items()
-                    if group in NON_PAINTABLE_PART_GROUPS
-                ],
+                protected_groups,
+                [uncertain_dark],
                 settings.mask_kernel_size,
                 settings.mask_feather_radius,
             )
@@ -208,10 +218,16 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
             masks_dir = work / "masks"
             masks_dir.mkdir()
             save_mask(full_car, masks_dir / "full-car.png")
-            save_mask(body, masks_dir / "paintable-body.png")
+            save_mask(paintability.editable, masks_dir / "editable-mask.png")
+            save_mask(paintability.protected, masks_dir / "protected-mask.png")
+            save_mask(paintability.uncertain, masks_dir / "uncertain-mask.png")
+            save_mask(paintability.editable, masks_dir / "paintable-body.png")
             mask_paths = {
                 "full_car": "masks/full-car.png",
                 "paintable_body": "masks/paintable-body.png",
+                "editable_mask": "masks/editable-mask.png",
+                "protected_mask": "masks/protected-mask.png",
+                "uncertain_mask": "masks/uncertain-mask.png",
             }
             for group, mask in sorted(part_masks.items()):
                 filename = f"{group}.png"
@@ -220,6 +236,12 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
 
             (work / f"source.{suffix}").write_bytes(source)
             save_base_assets(image, work)
+            (work / "paintability-report.json").write_text(
+                PaintabilityReport.model_validate(paintability.report).model_dump_json(
+                    indent=2
+                ),
+                encoding="utf-8",
+            )
             result = AssetBundle(
                 asset_id=asset_id,
                 view=view,
@@ -249,6 +271,10 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                     if absent_output_masks
                     else []
                 ),
+                paintability_report=PaintabilityReport.model_validate(
+                    paintability.report
+                ),
+                pipeline_version=PIPELINE_VERSION.decode(),
             )
             (work / "metadata.json").write_text(
                 result.model_dump_json(indent=2), encoding="utf-8"

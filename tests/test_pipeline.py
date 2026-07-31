@@ -1,14 +1,28 @@
 import unittest
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import cv2
 import numpy as np
 from PIL import Image
 from requests import Timeout
 
+from app.main import customise
+from app.modifications.instructions import RestrictedInstructionParser
+from app.modifications.schemas import (
+    RacingStripeElement,
+    RendererMode,
+    StripeAlignment,
+    StripePlacement,
+    StripeWidth,
+    SurfaceEditRequest,
+)
+from app.renderers.base import RenderResult, request_hash
+from app.renderers.generative import GenerativeSurfaceRenderer
 from app.detection import (
     CarDetection,
     PartDetection,
@@ -20,7 +34,9 @@ from app.detection import (
 from app.config import NON_PAINTABLE_PART_GROUPS
 from app.errors import PipelineError
 from app.flux import FluxSettings, render_flux
+from app.flux import composite_design, composite_plain_colour
 from app.image_ops import (
+    build_paintability_masks,
     build_body_mask,
     clean_mask,
     dark_trim_mask,
@@ -29,6 +45,7 @@ from app.image_ops import (
 )
 from app.roboflow import segment_boxes
 from app.pipeline import _asset_id, _clip_fallback_mask, _refine_side_windows
+from app.schemas import AssetBundle, BoundingBox
 
 
 class PipelineTest(unittest.TestCase):
@@ -267,6 +284,230 @@ class PipelineTest(unittest.TestCase):
             with self.assertRaises(PipelineError) as raised:
                 segment_boxes(b"image", [(0, 0, 10, 10)], settings)
         self.assertEqual(raised.exception.code, "sam_api_timeout")
+
+    def test_surface_edit_schema_validation(self) -> None:
+        request = SurfaceEditRequest(
+            body_colour="#183A63",
+            finish="metallic",
+            design_elements=[
+                {
+                    "type": "racing_stripes",
+                    "count": 2,
+                    "colour": "#D61F2C",
+                    "width": "thin",
+                    "placement": "bonnet_and_visible_roof",
+                    "alignment": "centre",
+                }
+            ],
+        )
+        self.assertEqual(request.body_colour, "#183a63")
+        self.assertEqual(request.design_elements[0].colour, "#d61f2c")
+        with self.assertRaises(ValueError):
+            SurfaceEditRequest(body_colour="red")
+        with self.assertRaises(ValueError):
+            RacingStripeElement(
+                count=3,
+                colour="#d61f2c",
+                width=StripeWidth.THIN,
+                placement=StripePlacement.BONNET,
+                alignment=StripeAlignment.CENTRE,
+            )
+        with self.assertRaises(ValueError):
+            SurfaceEditRequest()
+        with self.assertRaises(ValueError):
+            SurfaceEditRequest(body_colour="#123456", spoiler="large")
+
+    def test_instruction_parser_rejects_physical_changes(self) -> None:
+        parser = RestrictedInstructionParser()
+        parsed = parser.parse("Use metallic blue with one white stripe.")
+        self.assertEqual(parsed.body_colour, "#183a63")
+        self.assertEqual(parsed.finish.value, "metallic")
+        self.assertEqual(parsed.design_elements[0].count, 1)
+        with self.assertRaises(PipelineError) as bumper:
+            parser.parse("Replace the bumper.")
+        self.assertEqual(bumper.exception.code, "future_physical_modification")
+        with self.assertRaises(PipelineError) as rim:
+            parser.parse("Change the rims.")
+        self.assertEqual(rim.exception.code, "future_physical_modification")
+
+    def test_paintability_masks_protected_precedence_and_uncertain(self) -> None:
+        full = np.full((20, 20), 255, np.uint8)
+        protected = np.zeros_like(full)
+        protected[5:10, 5:10] = 255
+        uncertain = np.zeros_like(full)
+        uncertain[8:14, 8:14] = 255
+        masks = build_paintability_masks(full, [protected], [uncertain], 1, 0)
+
+        self.assertEqual(masks.protected[8, 8], 255)
+        self.assertEqual(masks.uncertain[8, 8], 0)
+        self.assertEqual(masks.editable[12, 12], 0)
+        self.assertEqual(masks.editable[2, 2], 255)
+
+    def test_customisation_cache_keys(self) -> None:
+        plain = SurfaceEditRequest(body_colour="#2563EB")
+        equivalent = SurfaceEditRequest(body_colour="2563eb", renderer=RendererMode.AUTO)
+        stripe = SurfaceEditRequest(
+            body_colour="#2563eb",
+            design_elements=[
+                RacingStripeElement(
+                    count=2,
+                    colour="#ffffff",
+                    width=StripeWidth.THIN,
+                    placement=StripePlacement.BONNET,
+                    alignment=StripeAlignment.CENTRE,
+                )
+            ],
+        )
+        other_stripe = stripe.model_copy(
+            update={
+                "design_elements": [
+                    RacingStripeElement(
+                        count=1,
+                        colour="#ffffff",
+                        width=StripeWidth.THIN,
+                        placement=StripePlacement.BONNET,
+                        alignment=StripeAlignment.CENTRE,
+                    )
+                ]
+            }
+        )
+        self.assertEqual(
+            request_hash(plain, renderer="deterministic"),
+            request_hash(equivalent, renderer="deterministic"),
+        )
+        self.assertNotEqual(
+            request_hash(plain, renderer="deterministic"),
+            request_hash(stripe, renderer="generative"),
+        )
+        self.assertNotEqual(
+            request_hash(stripe, renderer="generative"),
+            request_hash(other_stripe, renderer="generative"),
+        )
+
+    def test_composites_preserve_colour_and_outside_pixels(self) -> None:
+        original = Image.new("RGB", (10, 10), (200, 200, 200))
+        mask = Image.new("L", (10, 10), 0)
+        mask.paste(255, (2, 2, 8, 8))
+        generated = Image.new("RGB", (10, 10), (10, 20, 200))
+        plain = composite_plain_colour(original, generated, mask, (37, 99, 235))
+        self.assertEqual(plain.getpixel((0, 0)), (200, 200, 200))
+        self.assertLessEqual(
+            max(abs(a - b) for a, b in zip(plain.getpixel((5, 5)), (37, 99, 235))),
+            2,
+        )
+
+        pixels = np.zeros((10, 10, 3), np.uint8)
+        pixels[:, :5] = (210, 20, 20)
+        pixels[:, 5:] = (20, 20, 210)
+        design = composite_design(original, Image.fromarray(pixels), mask)
+        self.assertEqual(design.getpixel((0, 0)), (200, 200, 200))
+        self.assertNotEqual(design.getpixel((4, 5)), design.getpixel((6, 5)))
+
+    def test_legacy_metadata_loads(self) -> None:
+        bundle = AssetBundle(
+            asset_id="a" * 64,
+            view="front",
+            width=10,
+            height=10,
+            car_bbox=BoundingBox(x1=0, y1=0, x2=10, y2=10, confidence=1),
+            source_image="source.jpg",
+            original_image="original.webp",
+            luminance_map="luminance-map.png",
+            masks={"paintable_body": "masks/paintable-body.png"},
+            models={},
+        )
+        self.assertEqual(bundle.pipeline_version, "legacy")
+        self.assertTrue(bundle.available_modifications.body_colour)
+
+    def test_customise_endpoint_headers(self) -> None:
+        with TemporaryDirectory() as temporary:
+            asset_id = "a" * 64
+            directory = Path(temporary) / asset_id
+            directory.mkdir()
+            result = directory / "result.png"
+            Image.new("RGB", (4, 4), (1, 2, 3)).save(result)
+            metadata = AssetBundle(
+                asset_id=asset_id,
+                view="front",
+                width=4,
+                height=4,
+                car_bbox=BoundingBox(x1=0, y1=0, x2=4, y2=4, confidence=1),
+                source_image="source.jpg",
+                original_image="original.webp",
+                luminance_map="luminance-map.png",
+                masks={"paintable_body": "masks/paintable-body.png"},
+                models={},
+            )
+            (directory / "metadata.json").write_text(
+                metadata.model_dump_json(), encoding="utf-8"
+            )
+
+            class FakeRenderer:
+                def render(self, **kwargs) -> RenderResult:
+                    return RenderResult(result, False, "deterministic", "passed", [])
+
+            class FakeRequest:
+                async def json(self) -> dict:
+                    return {"type": "surface_edit", "body_colour": "#123456"}
+
+            with patch.dict("os.environ", {"STORAGE_ROOT": temporary}), patch(
+                "app.main.choose_renderer", return_value=FakeRenderer()
+            ):
+                import asyncio
+
+                response = asyncio.run(
+                    customise(asset_id, FakeRequest())
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["x-render-cached"], "false")
+            self.assertEqual(response.headers["x-renderer-used"], "deterministic")
+            self.assertEqual(response.headers["x-quality-status"], "passed")
+
+    def test_provider_failures_have_stable_error_codes(self) -> None:
+        @dataclass
+        class FailingProvider:
+            name: str = "failing"
+            calls: int = 0
+
+            def edit(self, **kwargs) -> Image.Image:
+                self.calls += 1
+                raise PipelineError("flux_unavailable", "No quota", 503)
+
+        provider = FailingProvider()
+        renderer = GenerativeSurfaceRenderer(
+            settings=FluxSettings("token", "space", 2.5, 28, 0, 300),
+            provider=provider,
+        )
+        with TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "masks").mkdir()
+            Image.new("RGB", (4, 4), (1, 2, 3)).save(
+                directory / "original.webp", "WEBP", lossless=True
+            )
+            cv2.imwrite(str(directory / "masks/paintable-body.png"), np.full((4, 4), 255, np.uint8))
+            metadata = AssetBundle(
+                asset_id="a" * 64,
+                view="front",
+                width=4,
+                height=4,
+                car_bbox=BoundingBox(x1=0, y1=0, x2=4, y2=4, confidence=1),
+                source_image="source.jpg",
+                original_image="original.webp",
+                luminance_map="luminance-map.png",
+                masks={"paintable_body": "masks/paintable-body.png"},
+                models={},
+            )
+            with self.assertRaises(PipelineError) as raised:
+                renderer.render(
+                    directory=directory,
+                    metadata=metadata,
+                    modification=SurfaceEditRequest(
+                        body_colour="#123456",
+                        custom_instruction="Make the car matte black.",
+                    ),
+                )
+        self.assertEqual(raised.exception.code, "flux_unavailable")
+        self.assertEqual(provider.calls, 2)
 
 
 if __name__ == "__main__":

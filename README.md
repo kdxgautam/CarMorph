@@ -1,26 +1,35 @@
 # Car customisation pipeline
 
-Backend-only MVP for uploading one car photograph, segmenting reusable car-part
-masks once, and previewing paint colours without regenerating the background or
-non-paintable parts.
+Backend-only car paint customisation API. It uploads one car photograph,
+segments reusable masks once, previews deterministic body recolours, and can
+render controlled surface edits such as finish changes and simple racing
+stripes while restoring original pixels outside editable paint.
 
-## Pipeline
+This project is not production-ready. The current car-parts weights are
+AGPL-3.0, FLUX.1 Kontext dev is not a production-commercial model, the public
+Hugging Face Space is development-only, and process-local locks are not
+suitable for multi-worker production deployment.
 
-1. YOLO-World detects the primary car and zero-shot regions such as the plate.
+## Architecture
+
+1. YOLO-World detects the primary car and zero-shot regions such as plate,
+   grille, and trim.
 2. A pretrained car-parts YOLO segmentation model detects windows, lights,
    bumpers, mirrors, and wheels.
-3. Roboflow SAM 2 refines the full-car and box-prompt masks.
-4. OpenCV cleans the masks and subtracts windows, wheels, tyres, lights, plates,
-   grille, and trim from the full-car mask.
-5. The original image, masks, and luminance map are stored under one
-   image-and-view content hash. Uploading identical bytes with the same view
-   reuses them without rerunning segmentation.
-6. The deterministic preview recolours only the paintable-body mask.
-7. The FLUX route asks the official FLUX.1 Kontext dev Space to edit the car,
-   restores the original luminance pattern, normalizes the median body colour
-   to the requested RGB, and composites only through the paintable-body mask.
+3. Roboflow SAM 2 refines full-car and box-prompt masks.
+4. OpenCV cleans masks and stores full-car, reusable part masks, and explicit
+   paintability masks:
+   `editable-mask.png`, `protected-mask.png`, and `uncertain-mask.png`.
+5. `paintable-body.png` is still written for backward compatibility and matches
+   the editable mask for new assets.
+6. Deterministic rendering uses the editable mask for body colour plus glossy,
+   matte, or metallic approximations.
+7. Generative rendering builds prompts only from validated structured requests,
+   calls the FLUX provider, composites through the editable mask, and restores
+   protected/background pixels.
 
-No Roboflow dataset, manual annotation, or frontend is required.
+Natural-language instructions are parsed by a restricted local parser. Raw user
+instructions are not sent directly to FLUX.
 
 ## Requirements
 
@@ -29,8 +38,6 @@ No Roboflow dataset, manual annotation, or frontend is required.
 - `jq`
 - A Roboflow API key
 - A Hugging Face read token with the FLUX.1 Kontext dev terms accepted
-
-Create the environment and install dependencies:
 
 ```bash
 python3.12 -m venv .venv
@@ -52,32 +59,16 @@ echo '6759cf983e0bdefaa95d2d3fc6b37f89d3718a319c08617c3c7a339e18fdc3cd  models/c
   | shasum -a 256 -c -
 ```
 
-Create the local configuration:
+Create local configuration from `.env.example`:
 
 ```bash
 cp .env.example .env
 ```
 
-Set these two secrets in `.env`:
-
-```dotenv
-ROBOFLOW_API_KEY=your_roboflow_key
-HF_TOKEN=hf_your_read_token
-```
-
-Get the Roboflow key from
-[Roboflow API settings](https://app.roboflow.com/settings/api), create the
-Hugging Face token at
-[Hugging Face access tokens](https://huggingface.co/settings/tokens), and
-accept the gated
-[FLUX.1 Kontext dev terms](https://huggingface.co/black-forest-labs/FLUX.1-Kontext-dev).
-
-`.env`, uploaded images, processed assets, and model weights are ignored by
-Git.
+Set `ROBOFLOW_API_KEY` and `HF_TOKEN` in `.env`. `.env`, uploaded images,
+processed assets, and model weights are ignored by Git.
 
 ## Start the API
-
-In terminal 1:
 
 ```bash
 source .venv/bin/activate
@@ -89,145 +80,172 @@ set +a
 uvicorn app.main:app --reload
 ```
 
-The API is available at `http://127.0.0.1:8000` and its interactive OpenAPI
-page is at `http://127.0.0.1:8000/docs`.
+The API is available at `http://127.0.0.1:8000`; OpenAPI is at `/docs`.
 
-## Test the complete pipeline
+## API routes
 
-Run the following commands in terminal 2 while Uvicorn is running.
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/cars` | Upload and segment one image |
+| `GET` | `/cars/{asset_id}` | Read stored metadata |
+| `GET` | `/cars/{asset_id}/assets/{path}` | Download original image or masks |
+| `GET` | `/cars/{asset_id}/preview?colour=2563eb` | Backward-compatible deterministic recolour |
+| `POST` | `/cars/{asset_id}/render?colour=2563eb` | Backward-compatible cached FLUX colour render |
+| `POST` | `/cars/{asset_id}/customise` | Controlled surface customisation PNG render |
 
-### 1. Select an image, view, and colour
-
-Put the image in `data/uploads/`:
-
-```bash
-mkdir -p data/uploads
-```
-
-Set the test values:
-
-```bash
-source .venv/bin/activate
-
-CAR_IMAGE_PATH="$PWD/data/uploads/tiagoside.png"
-CAR_VIEW="right"
-CAR_COLOUR="2563eb"
-
-test -f "$CAR_IMAGE_PATH" && echo "Image found: $CAR_IMAGE_PATH"
-```
-
-`CAR_VIEW` must be `front`, `rear`, `left`, or `right` and must match the
-photograph. The current left/right pipeline uses the same required parts.
-
-### 2. Upload, detect, and segment
-
-```bash
-set -o pipefail
-
-curl -sS --fail-with-body \
-  -X POST http://127.0.0.1:8000/cars \
-  -F "view=${CAR_VIEW}" \
-  -F "image=@${CAR_IMAGE_PATH}" \
-  | tee /tmp/car-response.json | jq
-```
-
-Extract and validate the returned asset ID:
-
-```bash
-ASSET_ID="$(jq -er '.asset_id' /tmp/car-response.json)"
-echo "ASSET_ID=$ASSET_ID"
-```
-
-Read the stored metadata:
-
-```bash
-curl -sS --fail-with-body \
-  "http://127.0.0.1:8000/cars/${ASSET_ID}" \
-  | jq
-```
-
-Inspect all generated masks without downloading duplicates into the project
-root:
-
-```bash
-open "data/processed/${ASSET_ID}/masks"
-open "data/processed/${ASSET_ID}/masks/full-car.png"
-open "data/processed/${ASSET_ID}/masks/paintable-body.png"
-open "data/processed/${ASSET_ID}/masks/windows.png"
-open "data/processed/${ASSET_ID}/masks/wheels.png"
-open "data/processed/${ASSET_ID}/masks/lights.png"
-```
-
-Repeating the upload command with identical image bytes and view returns the
-existing asset and does not rerun YOLO or SAM.
-
-### 3. Test deterministic recolouring
-
-```bash
-curl -sS --fail-with-body \
-  "http://127.0.0.1:8000/cars/${ASSET_ID}/preview?colour=${CAR_COLOUR}" \
-  -o /tmp/car-preview.png
-
-open /tmp/car-preview.png
-```
-
-### 4. Test FLUX generation
-
-The first request for a new asset/colour may queue on Hugging Face ZeroGPU:
-
-```bash
-curl -sS --fail-with-body \
-  -D /tmp/car-flux-headers.txt \
-  -X POST \
-  "http://127.0.0.1:8000/cars/${ASSET_ID}/render?colour=${CAR_COLOUR}" \
-  -o /tmp/car-flux.png
-
-cat /tmp/car-flux-headers.txt
-open /tmp/car-flux.png
-open "data/processed/${ASSET_ID}/renders"
-```
-
-The first successful request returns:
+`/customise` returns:
 
 ```text
-X-Render-Cached: false
+X-Render-Cached: true|false
+X-Renderer-Used: deterministic|generative
+X-Quality-Status: passed|passed_with_warnings|failed
 ```
 
-Repeat the same request to verify that no second FLUX inference runs:
+## Customise examples
+
+Plain colour:
 
 ```bash
 curl -sS --fail-with-body \
-  -D /tmp/car-flux-cached-headers.txt \
-  -X POST \
-  "http://127.0.0.1:8000/cars/${ASSET_ID}/render?colour=${CAR_COLOUR}" \
-  -o /tmp/car-flux-cached.png
-
-grep -i '^x-render-cached:' /tmp/car-flux-cached-headers.txt
+  -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"surface_edit","body_colour":"#183A63","finish":"glossy","design_elements":[],"custom_instruction":null,"renderer":"auto"}' \
+  -o /tmp/car-plain.png
 ```
 
-The repeated request returns:
+Matte finish:
+
+```bash
+curl -sS --fail-with-body \
+  -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"surface_edit","body_colour":"#111111","finish":"matte","design_elements":[],"custom_instruction":null,"renderer":"auto"}' \
+  -o /tmp/car-matte.png
+```
+
+Dual racing stripes:
+
+```bash
+curl -sS --fail-with-body \
+  -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"surface_edit","body_colour":"#183A63","finish":"metallic","design_elements":[{"type":"racing_stripes","count":2,"colour":"#D61F2C","width":"thin","placement":"bonnet_and_visible_roof","alignment":"centre"}],"custom_instruction":null,"renderer":"auto"}' \
+  -o /tmp/car-stripes.png
+```
+
+Natural-language instruction:
+
+```bash
+curl -sS --fail-with-body \
+  -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"surface_edit","custom_instruction":"Use metallic blue with one white stripe.","renderer":"auto"}' \
+  -o /tmp/car-natural-language.png
+```
+
+Rejected bumper instruction:
+
+```bash
+curl -sS --fail-with-body \
+  -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"surface_edit","custom_instruction":"Replace the bumper.","renderer":"auto"}'
+```
+
+The last command returns an error envelope with
+`future_physical_modification`.
+
+## Supported modifications
+
+- Body colour: six-digit RGB hex colours
+- Finish: `glossy`, `matte`, `metallic`
+- Racing stripes: count `1` or `2`; width `thin`, `medium`, `thick`; placement
+  `bonnet`, `visible_roof`, `bonnet_and_visible_roof`, or
+  `visible_side_panels`
+- Restricted instructions such as `Make the car matte black` or
+  `Use metallic blue with one white stripe`
+
+Unsupported in this milestone:
+
+- Rim, wheel, tyre, bumper, spoiler, suspension, convertible, body-kit, 3D,
+  GLB, and geometry-changing modifications
+- Arbitrary geometry fields in JSON
+- Unchecked free-form FLUX prompts
+
+## Renderer selection
+
+- Plain colour plus finish defaults to deterministic rendering.
+- Matte and metallic are deterministic approximations unless
+  `renderer:"generative"` is explicitly requested.
+- Racing stripes and custom instructions use generative rendering.
+- Physical modifications are rejected as future work.
+- Complex requests are not silently downgraded to plain recolouring.
+
+## Paintability masks
+
+`protected-mask.png` combines confidently non-paintable regions: windows,
+windscreen, wheels, tyres when grouped with wheels, number plate, lights,
+grille, detector-produced chrome/black trim, and badges when detected.
+
+`uncertain-mask.png` holds low-confidence dark or reflective regions such as
+deep shadows, glossy black paint, ambiguous bumper inserts, and chrome-like
+areas. Luminance-only dark regions are not blindly protected.
+
+`editable-mask.png` is:
 
 ```text
-X-Render-Cached: true
+full car - protected - uncertain
 ```
 
-Test another colour by changing `CAR_COLOUR`. Each new asset/colour/settings
-combination consumes one FLUX inference and then becomes cached:
+Protected pixels always override editable pixels. A `paintability-report.json`
+and metadata `paintability_report` record editable/protected/uncertain ratios,
+warnings, and the rules version.
 
-```bash
-CAR_COLOUR="1e3a8a"
+## Storage and caching
 
-curl -sS --fail-with-body \
-  -X POST \
-  "http://127.0.0.1:8000/cars/${ASSET_ID}/render?colour=${CAR_COLOUR}" \
-  -o /tmp/car-flux-dark-blue.png
-
-open /tmp/car-flux-dark-blue.png
+```text
+data/processed/<asset_id>/
+├── metadata.json
+├── paintability-report.json
+├── source.<extension>
+├── original.webp
+├── luminance-map.png
+├── masks/
+│   ├── full-car.png
+│   ├── paintable-body.png
+│   ├── editable-mask.png
+│   ├── protected-mask.png
+│   ├── uncertain-mask.png
+│   └── part masks...
+├── renders/
+│   └── flux-<colour>-<settings-hash>.png
+└── customisations/
+    └── <request_hash>/
+        ├── request.json
+        ├── result.png
+        └── quality.json
 ```
 
-### 5. Run local checks
+Upload caching remains content-addressed by image bytes, view, and pipeline
+version. Customisation cache keys include renderer version, provider/space,
+provider settings, normalized structured modification JSON, and mask/pipeline
+version. Equivalent JSON requests reuse the same cache entry.
 
-These checks do not call Roboflow or Hugging Face:
+## Quality checks
+
+Initial deterministic checks verify:
+
+- result dimensions match the original
+- outside-editable pixels remain exact
+- protected pixels remain exact
+- editable region is non-empty
+- generated images are readable before compositing
+
+These checks do not claim vehicle-identity AI validation.
+
+## Test commands
+
+Local checks do not call Roboflow or Hugging Face:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -235,42 +253,7 @@ python -m compileall -q app tests
 python -m pip check
 ```
 
-## API routes
-
-| Method | Route | Purpose |
-|---|---|---|
-| `POST` | `/cars` | Upload and segment one image |
-| `GET` | `/cars/{asset_id}` | Read stored metadata and bounding box |
-| `GET` | `/cars/{asset_id}/assets/{path}` | Download an original image or mask |
-| `GET` | `/cars/{asset_id}/preview?colour=2563eb` | Deterministic body recolouring |
-| `POST` | `/cars/{asset_id}/render?colour=2563eb` | Cached FLUX Kontext rendering |
-
-## Storage
-
-```text
-data/
-├── uploads/
-│   └── local test images...
-└── processed/
-    └── <asset_id>/
-        ├── metadata.json
-        ├── source.<extension>
-        ├── original.webp
-        ├── luminance-map.png
-        ├── renders/
-        │   └── flux-<colour>-<settings-hash>.png
-        └── masks/
-            ├── full-car.png
-            ├── paintable-body.png
-            ├── bumper.png
-            ├── dark_trim.png
-            ├── lights.png
-            ├── mirrors.png
-            ├── plate.png
-            ├── wheels.png
-            ├── windows.png
-            └── optional detected exclusions...
-```
+External Roboflow and FLUX calls are mocked or avoided in unit tests.
 
 ## Common errors
 
@@ -284,36 +267,30 @@ data/
 | `sam_api_error` | Roboflow could not be reached or rejected the request |
 | `invalid_sam_response` | SAM returned unusable mask data |
 | `mask_dimension_mismatch` | An image and mask have incompatible dimensions |
+| `invalid_modification` | Customisation JSON failed validation |
+| `future_physical_modification` | Natural language asked for a physical change |
+| `future_not_supported` | Structured request targets a future renderer |
+| `unsupported_instruction` | Natural language did not match safe surface edits |
+| `renderer_not_supported` | Explicit renderer cannot handle the request |
 | `flux_unavailable` | The FLUX Space is unavailable, queued, or out of quota |
 | `invalid_flux_response` | FLUX returned an invalid file or response |
+| `quality_check_failed` | Final composite failed deterministic quality checks |
 
-For a SAM cold start, keep `ROBOFLOW_TIMEOUT_SECONDS=180` and fully restart
-Uvicorn after changing `.env`. For FLUX quota exhaustion, wait for the Hugging
-Face quota to reset; repeated cached colours do not consume additional quota.
+## Future part replacement
 
-For side views where the car-parts model does not detect glass directly, the
-pipeline creates SAM prompts inside the expected glass area of detected doors
-and clips the results to the upper-door bounds. If SAM misses transparent
-glass, the inner seed itself provides a conservative fallback. The pipeline
-returns `missing_masks` instead of using broad prompts when no usable door is
-detected.
+Interfaces reserve a later physical-part pipeline:
 
-Window pillars remain part of the paintable-body mask; only the glass and its
-immediate edge are excluded.
+```text
+Original image
++ target-part mask
++ protected neighbouring masks
++ compatible reference asset
++ geometry/fitment constraints
+-> part-replacement renderer
+```
 
-The luminance-based `dark_trim` mask is stored for inspection but is not
-subtracted from the paintable body because deep paint shadows can otherwise be
-mistaken for plastic trim. Detector-produced grille and trim masks remain
-excluded.
-
-## Model and deployment notes
-
-- The pinned third-party car-parts weights are AGPL-3.0.
-- FLUX.1 Kontext dev is governed by Black Forest Labs'
-  non-commercial/non-production development-model license.
-- The public FLUX Space runs on Hugging Face ZeroGPU and is suitable for
-  development, not production availability.
-- Both segmentation and FLUX use process-local locks. Run one Uvicorn worker
-  for this MVP; use shared job/lock storage before running multiple workers.
-- Window-mask precision is the current quality ceiling on some side views:
-  over-segmentation can exclude nearby painted roof or pillar pixels.
+Useful masks and metadata are retained for wheels, tyres grouped with wheels,
+bumper, mirrors, lights, grille, number plate, trim, and windows. This
+milestone does not implement rim replacement, bumper replacement, spoilers,
+body kits, 3D models, GLB assets, 360-degree rendering, frontend applications,
+authentication, PostgreSQL, Redis, Celery, S3, or deployment infrastructure.

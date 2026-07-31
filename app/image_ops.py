@@ -1,5 +1,6 @@
 import math
 import warnings
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
@@ -12,6 +13,15 @@ from app.errors import PipelineError
 FORMATS = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
 MIN_DIMENSION = 256
 MAX_DIMENSION = 8192
+PAINTABILITY_RULES_VERSION = "paintability-1"
+
+
+@dataclass(frozen=True)
+class PaintabilityMasks:
+    editable: np.ndarray
+    protected: np.ndarray
+    uncertain: np.ndarray
+    report: dict
 
 
 def load_image(data: bytes) -> tuple[Image.Image, str]:
@@ -163,6 +173,57 @@ def build_body_mask(
     return body
 
 
+def build_paintability_masks(
+    full_car: np.ndarray,
+    protected_parts: list[np.ndarray],
+    uncertain_parts: list[np.ndarray],
+    kernel_size: int,
+    feather_radius: int,
+) -> PaintabilityMasks:
+    if any(mask.shape != full_car.shape for mask in [*protected_parts, *uncertain_parts]):
+        raise PipelineError(
+            "mask_dimension_mismatch",
+            "Full-car and paintability masks have different dimensions",
+            502,
+        )
+    protected = (
+        np.maximum.reduce([mask >= 128 for mask in protected_parts])
+        if protected_parts
+        else np.zeros_like(full_car, dtype=bool)
+    )
+    uncertain = (
+        np.maximum.reduce([mask >= 128 for mask in uncertain_parts])
+        if uncertain_parts
+        else np.zeros_like(full_car, dtype=bool)
+    )
+    uncertain &= ~protected
+    editable = (full_car >= 128) & ~protected & ~uncertain
+
+    editable_mask = clean_mask(
+        np.where(editable, 255, 0).astype(np.uint8),
+        (full_car.shape[1], full_car.shape[0]),
+        kernel_size,
+        feather_radius,
+    )
+    protected_mask = np.where(protected, 255, 0).astype(np.uint8)
+    uncertain_mask = np.where(uncertain, 255, 0).astype(np.uint8)
+    editable_mask[(protected_mask >= 128) | (uncertain_mask >= 128)] = 0
+    if not np.any(editable_mask >= 128):
+        raise PipelineError(
+            "missing_masks", "The editable mask is empty after paintability rules"
+        )
+
+    total = full_car.size
+    report = {
+        "editable_ratio": round(float(np.count_nonzero(editable_mask >= 128) / total), 4),
+        "protected_ratio": round(float(np.count_nonzero(protected_mask >= 128) / total), 4),
+        "uncertain_ratio": round(float(np.count_nonzero(uncertain_mask >= 128) / total), 4),
+        "warnings": [],
+        "rules_version": PAINTABILITY_RULES_VERSION,
+    }
+    return PaintabilityMasks(editable_mask, protected_mask, uncertain_mask, report)
+
+
 def save_mask(mask: np.ndarray, path: Path) -> None:
     if not cv2.imwrite(str(path), mask):
         raise OSError(f"Could not write mask: {path.name}")
@@ -199,6 +260,16 @@ def dark_trim_mask(
     )
 
 
+def uncertain_dark_region_mask(
+    image: Image.Image,
+    full_car: np.ndarray,
+    car_box: tuple[int, int, int, int],
+    kernel_size: int,
+    feather_radius: int,
+) -> np.ndarray:
+    return dark_trim_mask(image, full_car, car_box, kernel_size, feather_radius)
+
+
 def parse_colour(colour: str) -> tuple[str, tuple[int, int, int]]:
     value = colour.removeprefix("#")
     if len(value) != 6 or any(
@@ -216,7 +287,12 @@ def parse_colour(colour: str) -> tuple[str, tuple[int, int, int]]:
     return value.lower(), rgb
 
 
-def recolour(image: Image.Image, body_mask: np.ndarray, colour: str) -> bytes:
+def recolour(
+    image: Image.Image,
+    body_mask: np.ndarray,
+    colour: str,
+    finish: str = "glossy",
+) -> bytes:
     _, rgb = parse_colour(colour)
 
     source = np.asarray(image.convert("RGB"))
@@ -233,15 +309,24 @@ def recolour(image: Image.Image, body_mask: np.ndarray, colour: str) -> bytes:
 
     luminance = cv2.cvtColor(source, cv2.COLOR_RGB2GRAY).astype(np.float32)
     median_luminance = float(np.median(luminance[core]))
+    strength = {"glossy": 0.4, "matte": 0.22, "metallic": 0.5}.get(finish, 0.4)
+    low, high = {
+        "glossy": (0.55, 1.25),
+        "matte": (0.7, 1.12),
+        "metallic": (0.5, 1.32),
+    }.get(finish, (0.55, 1.25))
     detail = (
         np.clip(
-            1 + (luminance / median_luminance - 1) * 0.4,
-            0.55,
-            1.25,
+            1 + (luminance / median_luminance - 1) * strength,
+            low,
+            high,
         )
         if median_luminance
         else np.ones_like(luminance)
     )
+    if finish == "metallic":
+        shimmer = ((np.indices(luminance.shape).sum(axis=0) % 7) - 3) * 0.012
+        detail = np.clip(detail + shimmer, low, high)
     recoloured = np.rint(
         np.clip(
             np.asarray(rgb, dtype=np.float32) * detail[:, :, None],
