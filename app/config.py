@@ -63,6 +63,10 @@ PART_GROUPS = {
     },
     "bumper": {"front_bumper", "back_bumper", "rear_bumper"},
     "mirrors": {"left_mirror", "right_mirror", "mirror"},
+    "handles": {"door_handle", "car_door_handle", "handle"},
+    "roof": {"roof", "car_roof"},
+    "spoiler": {"spoiler", "car_spoiler"},
+    "pillars": {"window_pillar", "b_pillar", "c_pillar"},
 }
 OUTPUT_PART_GROUPS = {
     "wheels",
@@ -74,6 +78,10 @@ OUTPUT_PART_GROUPS = {
     "bumper",
     "mirrors",
     "dark_trim",
+    "handles",
+    "roof",
+    "spoiler",
+    "pillars",
 }
 NON_PAINTABLE_PART_GROUPS = {
     "wheels",
@@ -94,18 +102,28 @@ YOLO_PART_PROMPTS_BY_VIEW = {
         "license plate",
         "car grille",
         "black plastic trim",
+        "car roof",
+        "car spoiler",
     ],
     "rear": [
         "license plate",
         "black plastic trim",
+        "car roof",
+        "car spoiler",
     ],
     "left": [
         "license plate",
         "black plastic trim",
+        "car door handle",
+        "car roof",
+        "window pillar",
     ],
     "right": [
         "license plate",
         "black plastic trim",
+        "car door handle",
+        "car roof",
+        "window pillar",
     ],
 }
 
@@ -126,6 +144,24 @@ class Settings:
     mask_kernel_size: int
     mask_feather_radius: int
     storage_root: Path
+    body_paint_chroma_threshold: float
+    body_paint_lightness_threshold: float
+    body_paint_strict_chroma_threshold: float
+    paint_group_min_confidence: float
+    paint_group_uncertain_threshold: float
+    anchor_erosion_pixels: int
+    anchor_min_sample_count: int
+    paint_analysis_diagnostics: bool
+    body_seed_min_neighbours: int
+    body_growth_chroma_threshold: float
+    body_growth_local_lab_threshold: float
+    body_growth_max_gradient: float
+    body_growth_min_neighbours: int
+    body_growth_max_iterations: int
+    body_completion_kernel_size: int
+    body_completion_max_hole_area: int
+    body_region_min_boundary_ratio: float
+    body_fragment_min_area: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -166,6 +202,59 @@ class Settings:
                 storage_root=Path(
                     os.getenv("STORAGE_ROOT", "data/processed")
                 ).resolve(),
+                body_paint_chroma_threshold=float(
+                    os.getenv("BODY_PAINT_CHROMA_THRESHOLD", "18")
+                ),
+                body_paint_lightness_threshold=float(
+                    os.getenv("BODY_PAINT_LIGHTNESS_THRESHOLD", "35")
+                ),
+                body_paint_strict_chroma_threshold=float(
+                    os.getenv("BODY_PAINT_STRICT_CHROMA_THRESHOLD", "10")
+                ),
+                paint_group_min_confidence=float(
+                    os.getenv("PAINT_GROUP_MIN_CONFIDENCE", "0.7")
+                ),
+                paint_group_uncertain_threshold=float(
+                    os.getenv("PAINT_GROUP_UNCERTAIN_THRESHOLD", "0.45")
+                ),
+                anchor_erosion_pixels=int(os.getenv("ANCHOR_EROSION_PIXELS", "5")),
+                anchor_min_sample_count=int(
+                    os.getenv("ANCHOR_MIN_SAMPLE_COUNT", "500")
+                ),
+                paint_analysis_diagnostics=os.getenv(
+                    "PAINT_ANALYSIS_DIAGNOSTICS", "true"
+                ).lower()
+                not in {"0", "false", "no"},
+                body_seed_min_neighbours=int(
+                    os.getenv("BODY_SEED_MIN_NEIGHBOURS", "4")
+                ),
+                body_growth_chroma_threshold=float(
+                    os.getenv("BODY_GROWTH_CHROMA_THRESHOLD", "48")
+                ),
+                body_growth_local_lab_threshold=float(
+                    os.getenv("BODY_GROWTH_LOCAL_LAB_THRESHOLD", "20")
+                ),
+                body_growth_max_gradient=float(
+                    os.getenv("BODY_GROWTH_MAX_GRADIENT", "55")
+                ),
+                body_growth_min_neighbours=int(
+                    os.getenv("BODY_GROWTH_MIN_NEIGHBOURS", "2")
+                ),
+                body_growth_max_iterations=int(
+                    os.getenv("BODY_GROWTH_MAX_ITERATIONS", "16")
+                ),
+                body_completion_kernel_size=int(
+                    os.getenv("BODY_COMPLETION_KERNEL_SIZE", "7")
+                ),
+                body_completion_max_hole_area=int(
+                    os.getenv("BODY_COMPLETION_MAX_HOLE_AREA", "2000")
+                ),
+                body_region_min_boundary_ratio=float(
+                    os.getenv("BODY_REGION_MIN_BOUNDARY_RATIO", "0.18")
+                ),
+                body_fragment_min_area=int(
+                    os.getenv("BODY_FRAGMENT_MIN_AREA", "64")
+                ),
             )
         except ValueError as exc:
             raise PipelineError(
@@ -184,6 +273,33 @@ class Settings:
             raise PipelineError(
                 "configuration_error", "MASK_FEATHER_RADIUS cannot be negative", 503
             )
+        if settings.anchor_erosion_pixels < 0 or settings.anchor_min_sample_count < 1:
+            raise PipelineError(
+                "configuration_error",
+                "Anchor erosion must be non-negative and sample count positive",
+                503,
+            )
+        if (
+            settings.body_seed_min_neighbours < 1
+            or settings.body_growth_min_neighbours < 1
+            or settings.body_growth_max_iterations < 1
+            or settings.body_completion_max_hole_area < 1
+            or settings.body_fragment_min_area < 1
+        ):
+            raise PipelineError(
+                "configuration_error",
+                "Body-surface growth counts must be positive",
+                503,
+            )
+        if (
+            settings.body_completion_kernel_size < 1
+            or settings.body_completion_kernel_size % 2 == 0
+        ):
+            raise PipelineError(
+                "configuration_error",
+                "BODY_COMPLETION_KERNEL_SIZE must be a positive odd number",
+                503,
+            )
         if not all(
             0 <= value <= 1
             for value in (
@@ -191,6 +307,9 @@ class Settings:
                 settings.competing_car_ratio,
                 settings.parts_confidence,
                 settings.car_parts_confidence,
+                settings.paint_group_min_confidence,
+                settings.paint_group_uncertain_threshold,
+                settings.body_region_min_boundary_ratio,
             )
         ):
             raise PipelineError(
@@ -202,6 +321,19 @@ class Settings:
             raise PipelineError(
                 "configuration_error",
                 "ROBOFLOW_TIMEOUT_SECONDS must be positive",
+                503,
+            )
+        if min(
+            settings.body_paint_chroma_threshold,
+            settings.body_paint_lightness_threshold,
+            settings.body_paint_strict_chroma_threshold,
+            settings.body_growth_chroma_threshold,
+            settings.body_growth_local_lab_threshold,
+            settings.body_growth_max_gradient,
+        ) <= 0:
+            raise PipelineError(
+                "configuration_error",
+                "Body-paint colour thresholds must be positive",
                 503,
             )
         return settings

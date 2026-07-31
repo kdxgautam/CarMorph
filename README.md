@@ -17,16 +17,21 @@ suitable for multi-worker production deployment.
 2. A pretrained car-parts YOLO segmentation model detects windows, lights,
    bumpers, mirrors, and wheels.
 3. Roboflow SAM 2 refines full-car and box-prompt masks.
-4. OpenCV cleans masks and stores full-car, reusable part masks, and explicit
-   paintability masks:
+4. OpenCV cleans masks and stores full-car and reusable part masks.
+5. Body-paint analysis erodes safe panel interiors, rejects extreme lighting,
+   estimates a dominant LAB/chroma profile, classifies detected parts by
+   semantics/material/colour context, and stores disjoint paint groups.
+6. Request-specific mask building selects main-body groups and, only when
+   requested, the contrast-roof group. It still stores the explicit
+   compatibility masks:
    `editable-mask.png`, `protected-mask.png`, and `uncertain-mask.png`.
-5. `paintable-body.png` is still written for backward compatibility and matches
+7. `paintable-body.png` is still written for backward compatibility and matches
    the editable mask for new assets.
-6. Deterministic rendering uses the editable mask for body colour plus glossy,
+8. Deterministic rendering uses the selected mask for body colour plus glossy,
    matte, or metallic approximations.
-7. Generative rendering builds prompts only from validated structured requests,
-   calls the FLUX provider, composites through the editable mask, and restores
-   protected/background pixels.
+9. Generative rendering builds prompts only from validated structured requests,
+   calls the FLUX provider, composites through the request-specific mask, and
+   restores every pixel outside it.
 
 Natural-language instructions are parsed by a restricted local parser. Raw user
 instructions are not sent directly to FLUX.
@@ -113,6 +118,16 @@ curl -sS --fail-with-body \
   -o /tmp/car-plain.png
 ```
 
+Body plus a separately targeted contrast roof:
+
+```bash
+curl -sS --fail-with-body \
+  -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"surface_edit","body_colour":"#183A63","roof_colour":"#111111"}' \
+  -o /tmp/car-dual-tone.png
+```
+
 Matte finish:
 
 ```bash
@@ -183,23 +198,85 @@ Unsupported in this milestone:
 
 ## Paintability masks
 
-`protected-mask.png` combines confidently non-paintable regions: windows,
-windscreen, wheels, tyres when grouped with wheels, number plate, lights,
-grille, detector-produced chrome/black trim, and badges when detected.
+### Body-paint analysis
 
-`uncertain-mask.png` holds low-confidence dark or reflective regions such as
-deep shadows, glossy black paint, ambiguous bumper inserts, and chrome-like
-areas. Luminance-only dark regions are not blindly protected.
+The first version is deliberately heuristic. It does not classify by colour
+alone. Detected part identity and strong material evidence override colour
+similarity; LAB chroma relationship, local brightness, appearance statistics,
+spatial context, and confidence are then combined.
 
-`editable-mask.png` is:
+The main colour profile starts with car pixels outside detected accessories and
+protected parts. It erodes that candidate mask away from panel boundaries,
+removes the lightest and darkest deciles, clusters remaining LAB chroma values,
+and uses the dominant cluster. This lets a painted panel in shade remain related
+to the same panel in sunlight: chroma can match even when LAB lightness differs.
+`body-paint-profile.json` records the samples, robust median/variance, lighting
+ranges, confidence, and warnings.
+
+Detected handles and mirror caps are included with the body only when they look
+painted and match its profile confidently. Contrasting painted variants remain
+separate. Chrome or plastic evidence protects them. Pillar semantics strongly
+favour glossy trim protection. A detected roof that differs from the main paint
+becomes `contrast_roof_paint`; it changes only when `roof_colour` is present.
+Bumper pixels are split between chroma-related painted sections and protected
+cladding instead of treating the bumper as one material.
+
+Black main paint is retained when it is the dominant eroded panel profile;
+detected trim semantics plus dark neutral appearance identify probable plastic.
+Black-on-black boundaries, reflections, missing part detections, and unusual
+aftermarket finishes can still be ambiguous. Those pixels remain uncertain
+rather than editable. A labelled paintability/material model is the likely
+future replacement for difficult cases.
+
+### Paint groups
+
+New assets may contain only the non-empty masks among:
 
 ```text
-full car - protected - uncertain
+main-body-paint-mask.png
+secondary-body-paint-mask.png
+contrast-roof-mask.png
+body-coloured-handles-mask.png
+contrasting-handles-mask.png
+body-coloured-mirror-caps-mask.png
+contrasting-mirror-caps-mask.png
+painted-bumper-sections-mask.png
+black-plastic-trim-mask.png
+glossy-black-trim-mask.png
+chrome-trim-mask.png
+silver-garnish-mask.png
+paint-group-uncertain-mask.png
 ```
 
-Protected pixels always override editable pixels. A `paintability-report.json`
-and metadata `paintability_report` record editable/protected/uncertain ratios,
-warnings, and the rules version.
+`paint-groups.json` contains per-group pixel counts/confidence and structured
+region decisions. With `PAINT_ANALYSIS_DIAGNOSTICS=true`,
+`paint-groups-overlay.png` and `body-paint-anchor-overlay.png` show group and
+anchor coverage.
+
+`protected-mask.png` combines confidently non-paintable or non-default-target
+groups: windows, wheels/tyres, number plate, lights, grille, chrome, black
+plastic, glossy trim, silver garnish, and contrasting paint groups.
+
+`uncertain-mask.png` holds low-confidence regions. Luminance-only dark regions
+are never declared plastic; they remain uncertain unless part/material evidence
+supports protection.
+
+The safe default `editable-mask.png` is:
+
+```text
+main body paint
++ body-coloured handles
++ body-coloured mirror caps
++ painted bumper sections
++ body-coloured spoiler
+- protected
+- uncertain
+```
+
+It excludes contrast roof, secondary paint, contrasting handles/caps, and trim.
+A request with `roof_colour` loads the contrast-roof mask separately and applies
+its colour independently. Older assets fall back to their existing editable or
+paintable-body mask.
 
 ## Storage and caching
 
@@ -207,6 +284,8 @@ warnings, and the rules version.
 data/processed/<asset_id>/
 ├── metadata.json
 ├── paintability-report.json
+├── body-paint-profile.json
+├── paint-groups.json
 ├── source.<extension>
 ├── original.webp
 ├── luminance-map.png
@@ -216,6 +295,10 @@ data/processed/<asset_id>/
 │   ├── editable-mask.png
 │   ├── protected-mask.png
 │   ├── uncertain-mask.png
+│   ├── main-body-paint-mask.png
+│   ├── contrast-roof-mask.png
+│   ├── paint-groups-overlay.png
+│   ├── body-paint-anchor-overlay.png
 │   └── part masks...
 ├── renders/
 │   └── flux-<colour>-<settings-hash>.png
@@ -240,6 +323,11 @@ Initial deterministic checks verify:
 - protected pixels remain exact
 - editable region is non-empty
 - generated images are readable before compositing
+- paint groups do not overlap
+- protected and uncertain groups never overlap the default editable mask
+- body-coloured handles follow the default body request
+- contrasting handles and a contrast roof remain outside the default request
+- the main-body profile and mask meet configured confidence/non-empty checks
 
 These checks do not claim vehicle-identity AI validation.
 

@@ -4,6 +4,9 @@ from enum import StrEnum
 import numpy as np
 from PIL import Image
 
+from app.paint_analysis.mask_builder import PaintAnalysisMasks
+from app.paint_analysis.schemas import PaintGroup
+
 
 class QualityStatus(StrEnum):
     PASSED = "passed"
@@ -18,6 +21,51 @@ class QualityResult:
 
     def model_dump(self) -> dict:
         return {"status": self.status.value, "warnings": self.warnings}
+
+
+def check_paint_analysis(
+    group_masks: dict[PaintGroup, np.ndarray],
+    masks: PaintAnalysisMasks,
+    *,
+    profile_confidence: float | None = None,
+    confidence_threshold: float = 0.45,
+) -> list[str]:
+    warnings = []
+    occupied = np.zeros(masks.editable.shape, np.uint8)
+    for mask in group_masks.values():
+        if np.any((occupied > 0) & (mask >= 128)):
+            warnings.append("paint_groups_do_not_overlap_failed")
+            break
+        occupied[mask >= 128] = 1
+    if not np.any(masks.editable >= 128):
+        warnings.append("main_body_mask_non_empty_failed")
+    if (
+        profile_confidence is not None
+        and profile_confidence < confidence_threshold
+    ):
+        warnings.append("body_paint_profile_confident_failed")
+    if np.any((masks.protected >= 128) & (masks.editable >= 128)):
+        warnings.append("protected_groups_override_editable_groups_failed")
+    if np.any((masks.uncertain >= 128) & (masks.editable >= 128)):
+        warnings.append("uncertain_groups_not_editable_failed")
+    for group, warning in (
+        (PaintGroup.BODY_COLOURED_HANDLE, "body_coloured_handles_follow_request_failed"),
+        (
+            PaintGroup.CONTRASTING_HANDLE,
+            "contrasting_handles_remain_unchanged_failed",
+        ),
+        (
+            PaintGroup.CONTRAST_ROOF_PAINT,
+            "contrast_roof_remains_unchanged_when_not_requested_failed",
+        ),
+    ):
+        mask = group_masks.get(group)
+        if mask is None:
+            continue
+        should_edit = group == PaintGroup.BODY_COLOURED_HANDLE
+        if np.any((mask >= 128) & ((masks.editable >= 128) != should_edit)):
+            warnings.append(warning)
+    return warnings
 
 
 def check_render(

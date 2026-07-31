@@ -71,6 +71,7 @@ class SurfaceEditRequest(BaseModel):
 
     type: Literal["surface_edit"] = "surface_edit"
     body_colour: str | None = None
+    roof_colour: str | None = None
     finish: PaintFinish = PaintFinish.GLOSSY
     design_elements: list[DesignElement] = Field(default_factory=list)
     custom_instruction: str | None = None
@@ -79,6 +80,11 @@ class SurfaceEditRequest(BaseModel):
     @field_validator("body_colour")
     @classmethod
     def validate_body_colour(cls, value: str | None) -> str | None:
+        return normalise_hex(value) if value is not None else None
+
+    @field_validator("roof_colour")
+    @classmethod
+    def validate_roof_colour(cls, value: str | None) -> str | None:
         return normalise_hex(value) if value is not None else None
 
     @field_validator("custom_instruction")
@@ -95,7 +101,12 @@ class SurfaceEditRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_request(self) -> "SurfaceEditRequest":
-        if not self.body_colour and not self.design_elements and not self.custom_instruction:
+        if (
+            not self.body_colour
+            and not self.roof_colour
+            and not self.design_elements
+            and not self.custom_instruction
+        ):
             raise ValueError("Surface edit request is empty")
 
         seen: dict[tuple[StripePlacement, StripeAlignment], dict] = {}

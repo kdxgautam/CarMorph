@@ -6,7 +6,7 @@ from typing import Protocol
 from app.modifications.schemas import SurfaceEditRequest, normalised_request_json
 from app.schemas import AssetBundle
 
-RENDERER_CACHE_VERSION = "surface-render-1"
+RENDERER_CACHE_VERSION = "surface-render-2"
 
 
 @dataclass(frozen=True)

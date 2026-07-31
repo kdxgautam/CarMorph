@@ -9,7 +9,6 @@ import cv2
 import numpy as np
 
 from app.config import (
-    NON_PAINTABLE_PART_GROUPS,
     OUTPUT_PART_GROUPS,
     REQUIRED_PART_GROUPS_BY_VIEW,
     Settings,
@@ -17,7 +16,6 @@ from app.config import (
 from app.detection import PartDetection, detect_car_and_parts
 from app.errors import PipelineError
 from app.image_ops import (
-    build_paintability_masks,
     clean_mask,
     combine_masks,
     dark_trim_mask,
@@ -26,14 +24,44 @@ from app.image_ops import (
     polygons_to_mask,
     save_base_assets,
     save_mask,
-    uncertain_dark_region_mask,
 )
+from app.paint_analysis.diagnostics import (
+    anchor_overlay,
+    paint_group_overlay,
+    surface_completion_overlay,
+)
+from app.paint_analysis.paint_group_classifier import analyse_paint_groups
+from app.paint_analysis.schemas import PaintGroup
+from app.quality.checks import check_paint_analysis
 from app.roboflow import segment_boxes
-from app.schemas import AssetBundle, BoundingBox, PaintabilityReport, ViewName
+from app.schemas import (
+    AssetBundle,
+    AvailableModifications,
+    BoundingBox,
+    PaintabilityReport,
+    ViewName,
+)
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"8"
+PIPELINE_VERSION = b"10"
+PAINT_ANALYSIS_VERSION = "paint-groups-v2"
+
+PAINT_GROUP_FILENAMES = {
+    PaintGroup.MAIN_BODY_PAINT: "main-body-paint-mask.png",
+    PaintGroup.SECONDARY_BODY_PAINT: "secondary-body-paint-mask.png",
+    PaintGroup.CONTRAST_ROOF_PAINT: "contrast-roof-mask.png",
+    PaintGroup.BODY_COLOURED_HANDLE: "body-coloured-handles-mask.png",
+    PaintGroup.CONTRASTING_HANDLE: "contrasting-handles-mask.png",
+    PaintGroup.BODY_COLOURED_MIRROR_CAP: "body-coloured-mirror-caps-mask.png",
+    PaintGroup.CONTRASTING_MIRROR_CAP: "contrasting-mirror-caps-mask.png",
+    PaintGroup.PAINTED_BUMPER_SECTION: "painted-bumper-sections-mask.png",
+    PaintGroup.BLACK_PLASTIC_TRIM: "black-plastic-trim-mask.png",
+    PaintGroup.GLOSSY_BLACK_TRIM: "glossy-black-trim-mask.png",
+    PaintGroup.CHROME_TRIM: "chrome-trim-mask.png",
+    PaintGroup.SILVER_GARNISH: "silver-garnish-mask.png",
+    PaintGroup.UNKNOWN: "paint-group-uncertain-mask.png",
+}
 
 
 def _asset_id(source: bytes, view: ViewName) -> str:
@@ -191,29 +219,25 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 settings.mask_kernel_size,
                 settings.mask_feather_radius,
             )
-            uncertain_dark = uncertain_dark_region_mask(
-                image,
-                full_car,
-                car.box,
-                settings.mask_kernel_size,
-                settings.mask_feather_radius,
-            )
             absent_output_masks = sorted(OUTPUT_PART_GROUPS - part_masks.keys())
             for group in absent_output_masks:
                 part_masks[group] = np.zeros_like(full_car)
 
-            protected_groups = [
-                mask
-                for group, mask in part_masks.items()
-                if group in NON_PAINTABLE_PART_GROUPS
-            ]
-            paintability = build_paintability_masks(
+            analysis = analyse_paint_groups(
+                image,
                 full_car,
-                protected_groups,
-                [uncertain_dark],
-                settings.mask_kernel_size,
-                settings.mask_feather_radius,
+                part_masks,
+                settings,
             )
+            analysis_warnings = check_paint_analysis(
+                analysis.group_masks,
+                analysis.masks,
+                profile_confidence=analysis.report.body_paint_profile.confidence,
+                confidence_threshold=settings.paint_group_uncertain_threshold,
+            )
+            if analysis_warnings:
+                analysis.report.warnings.extend(analysis_warnings)
+            paintability = analysis.masks
 
             masks_dir = work / "masks"
             masks_dir.mkdir()
@@ -233,13 +257,87 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 filename = f"{group}.png"
                 save_mask(mask, masks_dir / filename)
                 mask_paths[group] = f"masks/{filename}"
+            for group, mask in analysis.group_masks.items():
+                filename = PAINT_GROUP_FILENAMES.get(
+                    group, f"{group.value.replace('_', '-')}-mask.png"
+                )
+                save_mask(mask, masks_dir / filename)
+                mask_paths[group.value] = f"masks/{filename}"
+            for key, filename, mask in (
+                (
+                    "safe_body_candidate",
+                    "safe-body-candidate-mask.png",
+                    analysis.surface.safe_candidate,
+                ),
+                (
+                    "hard_protected",
+                    "hard-protected-mask.png",
+                    analysis.surface.hard_protected,
+                ),
+                (
+                    "growth_candidate",
+                    "growth-candidate-mask.png",
+                    analysis.surface.growth_candidate,
+                ),
+                (
+                    "main_body_seed",
+                    "main-body-seed-mask.png",
+                    analysis.surface.seeds,
+                ),
+            ):
+                save_mask(mask, masks_dir / filename)
+                mask_paths[key] = f"masks/{filename}"
+            if settings.paint_analysis_diagnostics:
+                paint_group_overlay(image, analysis.group_masks).save(
+                    masks_dir / "paint-groups-overlay.png"
+                )
+                anchor_overlay(image, analysis.anchors).save(
+                    masks_dir / "body-paint-anchor-overlay.png"
+                )
+                mask_paths["paint_groups_overlay"] = "masks/paint-groups-overlay.png"
+                mask_paths["body_paint_anchor_overlay"] = (
+                    "masks/body-paint-anchor-overlay.png"
+                )
+                surface_completion_overlay(
+                    image,
+                    analysis.surface.safe_candidate,
+                    analysis.surface.hard_protected,
+                    analysis.surface.seeds,
+                    analysis.surface.main_body,
+                ).save(masks_dir / "surface-completion-overlay.png")
+                mask_paths["surface_completion_overlay"] = (
+                    "masks/surface-completion-overlay.png"
+                )
 
             (work / f"source.{suffix}").write_bytes(source)
             save_base_assets(image, work)
-            (work / "paintability-report.json").write_text(
-                PaintabilityReport.model_validate(paintability.report).model_dump_json(
-                    indent=2
+            car_pixels = max(1, int(np.count_nonzero(full_car >= 128)))
+            paintability_report = PaintabilityReport(
+                editable_ratio=round(
+                    float(np.count_nonzero(paintability.editable >= 128) / car_pixels), 4
                 ),
+                protected_ratio=round(
+                    float(np.count_nonzero(paintability.protected >= 128) / car_pixels), 4
+                ),
+                uncertain_ratio=round(
+                    float(np.count_nonzero(paintability.uncertain >= 128) / car_pixels), 4
+                ),
+                warnings=analysis.report.warnings,
+                rules_version=PAINT_ANALYSIS_VERSION,
+            )
+            (work / "paintability-report.json").write_text(
+                paintability_report.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+            (work / "paint-groups.json").write_text(
+                analysis.report.model_dump_json(indent=2), encoding="utf-8"
+            )
+            (work / "body-paint-profile.json").write_text(
+                analysis.report.body_paint_profile.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+            (work / "surface-completion.json").write_text(
+                analysis.surface.report.model_dump_json(indent=2),
                 encoding="utf-8",
             )
             result = AssetBundle(
@@ -271,9 +369,11 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                     if absent_output_masks
                     else []
                 ),
-                paintability_report=PaintabilityReport.model_validate(
-                    paintability.report
-                ),
+                paintability_report=paintability_report,
+                body_paint_profile=analysis.report.body_paint_profile,
+                paint_group_report=analysis.report,
+                paint_analysis_version=PAINT_ANALYSIS_VERSION,
+                available_modifications=AvailableModifications(roof_colour=True),
                 pipeline_version=PIPELINE_VERSION.decode(),
             )
             (work / "metadata.json").write_text(

@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.paint_analysis.schemas import BodyPaintProfile, PaintGroupReport
+
 ViewName = Literal["front", "left", "right", "rear"]
 
 
@@ -45,6 +47,9 @@ class AssetBundle(BaseModel):
     models: dict[str, str]
     warnings: list[str] = Field(default_factory=list)
     paintability_report: PaintabilityReport = Field(default_factory=PaintabilityReport)
+    body_paint_profile: BodyPaintProfile | None = None
+    paint_group_report: PaintGroupReport | None = None
+    paint_analysis_version: str | None = None
     available_modifications: AvailableModifications = Field(
         default_factory=AvailableModifications
     )

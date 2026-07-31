@@ -13,3 +13,4 @@ models/
 weights/
 *.pt
 .env
+evaluation/

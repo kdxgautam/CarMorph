@@ -7,10 +7,16 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 
 from app.errors import PipelineError
-from app.flux import FluxSettings, HuggingFaceFluxKontextProvider, composite_design, composite_plain_colour
+from app.flux import (
+    FluxSettings,
+    HuggingFaceFluxKontextProvider,
+    composite_design,
+    composite_plain_colour,
+)
 from app.image_ops import parse_colour
 from app.modifications.prompts import build_surface_prompt
 from app.modifications.schemas import SurfaceEditRequest, normalised_request_json
+from app.paint_analysis.mask_builder import load_request_masks
 from app.quality.checks import QualityStatus, check_render
 from app.renderers.base import RenderResult, request_hash
 from app.schemas import AssetBundle
@@ -56,15 +62,13 @@ class GenerativeSurfaceRenderer:
         if output.is_file():
             return RenderResult(output, True, self.name, QualityStatus.PASSED.value, [])
 
-        mask_path = metadata.masks.get("editable_mask") or metadata.masks.get("paintable_body")
-        if not mask_path:
-            raise PipelineError("missing_masks", "Editable mask is missing", 500)
         protected_path = metadata.masks.get("protected_mask")
         try:
             with Image.open(directory / metadata.original_image) as opened:
                 original = opened.convert("RGB")
-            with Image.open(directory / mask_path) as opened:
-                mask = opened.convert("L")
+            body_mask, roof_mask = load_request_masks(
+                directory, metadata, include_roof=bool(modification.roof_colour)
+            )
             protected = (
                 cv2.imread(str(directory / protected_path), cv2.IMREAD_GRAYSCALE)
                 if protected_path
@@ -72,17 +76,47 @@ class GenerativeSurfaceRenderer:
             )
         except (OSError, UnidentifiedImageError) as exc:
             raise PipelineError("missing_masks", "A render asset is missing", 500) from exc
-        editable = np.asarray(mask)
         if protected is None:
             raise PipelineError("missing_masks", "Protected mask is missing", 500)
+        if modification.roof_colour and not np.any(roof_mask >= 128):
+            raise PipelineError(
+                "missing_masks", "A contrast-roof paint group is not available", 400
+            )
+        editable = np.maximum(
+            body_mask
+            if (
+                modification.body_colour
+                or modification.design_elements
+                or modification.custom_instruction
+            )
+            else np.zeros_like(body_mask),
+            roof_mask,
+        )
+        mask = Image.fromarray(editable)
 
         prompt = build_surface_prompt(modification)
         generated = self._edit_with_one_retry(directory / metadata.original_image, prompt)
         if modification.design_elements or modification.custom_instruction:
-            result = composite_design(original, generated, mask)
+            result = composite_design(
+                original, generated, Image.fromarray(body_mask)
+            )
+            if modification.roof_colour:
+                _, roof_rgb = parse_colour(modification.roof_colour)
+                result = composite_plain_colour(
+                    result, generated, Image.fromarray(roof_mask), roof_rgb
+                )
         else:
-            _, rgb = parse_colour(modification.body_colour or "#ffffff")
-            result = composite_plain_colour(original, generated, mask, rgb)
+            result = original
+            if modification.body_colour:
+                _, rgb = parse_colour(modification.body_colour)
+                result = composite_plain_colour(
+                    result, generated, Image.fromarray(body_mask), rgb
+                )
+            if modification.roof_colour:
+                _, roof_rgb = parse_colour(modification.roof_colour)
+                result = composite_plain_colour(
+                    result, generated, Image.fromarray(roof_mask), roof_rgb
+                )
 
         quality = check_render(
             original=original,
