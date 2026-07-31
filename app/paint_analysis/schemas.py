@@ -121,4 +121,4 @@ class PaintGroupReport(BaseModel):
     region_classifications: list[RegionClassification] = Field(default_factory=list)
     surface_completion: SurfaceCompletionReport | None = None
     warnings: list[str] = Field(default_factory=list)
-    rules_version: str = "paint-groups-v2"
+    rules_version: str = "paint-groups-v3"

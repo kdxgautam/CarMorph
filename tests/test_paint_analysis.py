@@ -70,6 +70,7 @@ class PaintAnalysisTest(unittest.TestCase):
         lab[:] = (50, 50, 30)
         lab[25:29, 8:112] = (82, 65, 38)
         lab[52:58, 8:112] = (20, 55, 33)
+        lab[:, :4] = (90, 60, 35)
         safe = np.full(shape, 255, np.uint8)
         protected = rectangle(shape, (45, 8, 75, 22))
         contrast = rectangle(shape, (35, 0, 85, 7))
@@ -85,6 +86,7 @@ class PaintAnalysisTest(unittest.TestCase):
 
         self.assertGreater(np.mean(result.main_body[25:29, 8:112] > 0), 0.9)
         self.assertGreater(np.mean(result.main_body[52:58, 8:112] > 0), 0.9)
+        self.assertGreater(np.mean(result.main_body[:, :4] > 0), 0.9)
         self.assertFalse(np.any((result.main_body > 0) & (protected > 0)))
         self.assertFalse(np.any((result.main_body > 0) & (contrast > 0)))
         metrics = result.report.fragmentation

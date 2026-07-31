@@ -219,7 +219,9 @@ those seeds through locally compatible, connected pixels inside
 `safe-body-candidate-mask.png`. Strong semantic protection is represented by
 `hard-protected-mask.png` and cannot be crossed. Region voting and bounded
 morphological completion recover coherent highlights, shadows, narrow strips,
-and small internal gaps while retaining large unrelated colour regions.
+and small internal gaps while retaining large unrelated colour regions. A final
+chroma-only boundary pass tolerates strong lightness changes at panel edges
+without relaxing the global candidate or hard-protection constraints.
 
 `surface-completion.json` records region decisions, seed/final pixel counts,
 recovered pixels, connected-component counts, small-fragment counts, internal

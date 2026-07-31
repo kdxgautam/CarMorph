@@ -158,6 +158,33 @@ def complete_body_surface(
             break
         accepted |= additions
 
+    # Recover illumination edges after conservative full-LAB growth. The global
+    # candidate and hard masks still prevent crossing into contrast/protection.
+    for _ in range(max(1, settings.body_growth_max_iterations // 4)):
+        frontier = (
+            (cv2.dilate(_mask(accepted), kernel) > 0)
+            & growth_candidate
+            & ~accepted
+        )
+        if not np.any(frontier):
+            break
+        local_mean, neighbours = _neighbour_mean(lab, accepted)
+        local_chroma = np.linalg.norm(
+            lab[:, :, 1:] - local_mean[:, :, 1:],
+            axis=2,
+        )
+        additions = (
+            frontier
+            & (neighbours >= settings.body_growth_min_neighbours)
+            & (
+                local_chroma
+                <= settings.body_growth_local_lab_threshold * 1.5
+            )
+        )
+        if not np.any(additions):
+            break
+        accepted |= additions
+
     completion_kernel = cv2.getStructuringElement(
         cv2.MORPH_ELLIPSE,
         (settings.body_completion_kernel_size,) * 2,
