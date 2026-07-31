@@ -213,6 +213,20 @@ to the same panel in sunlight: chroma can match even when LAB lightness differs.
 `body-paint-profile.json` records the samples, robust median/variance, lighting
 ranges, confidence, and warnings.
 
+Strict profile matches now create `main-body-seed-mask.png`; they are not the
+final editable mask. A two-stage OpenCV/NumPy surface-completion pass grows
+those seeds through locally compatible, connected pixels inside
+`safe-body-candidate-mask.png`. Strong semantic protection is represented by
+`hard-protected-mask.png` and cannot be crossed. Region voting and bounded
+morphological completion recover coherent highlights, shadows, narrow strips,
+and small internal gaps while retaining large unrelated colour regions.
+
+`surface-completion.json` records region decisions, seed/final pixel counts,
+recovered pixels, connected-component counts, small-fragment counts, internal
+gap pixels, and growth iterations. `surface-completion-overlay.png` shows safe
+candidates in yellow, completed body in green, strict seeds in cyan, and hard
+protection in red.
+
 Detected handles and mirror caps are included with the body only when they look
 painted and match its profile confidently. Contrasting painted variants remain
 separate. Chrome or plastic evidence protects them. Pillar semantics strongly
@@ -286,8 +300,8 @@ data/processed/<asset_id>/
 ├── paintability-report.json
 ├── body-paint-profile.json
 ├── paint-groups.json
+├── surface-completion.json
 ├── source.<extension>
-├── original.webp
 ├── luminance-map.png
 ├── masks/
 │   ├── full-car.png
@@ -295,10 +309,15 @@ data/processed/<asset_id>/
 │   ├── editable-mask.png
 │   ├── protected-mask.png
 │   ├── uncertain-mask.png
+│   ├── safe-body-candidate-mask.png
+│   ├── hard-protected-mask.png
+│   ├── growth-candidate-mask.png
+│   ├── main-body-seed-mask.png
 │   ├── main-body-paint-mask.png
 │   ├── contrast-roof-mask.png
 │   ├── paint-groups-overlay.png
 │   ├── body-paint-anchor-overlay.png
+│   ├── surface-completion-overlay.png
 │   └── part masks...
 ├── renders/
 │   └── flux-<colour>-<settings-hash>.png
@@ -328,6 +347,8 @@ Initial deterministic checks verify:
 - body-coloured handles follow the default body request
 - contrasting handles and a contrast roof remain outside the default request
 - the main-body profile and mask meet configured confidence/non-empty checks
+- every strict seed survives in the final editable body mask
+- surface growth never crosses hard protection
 
 These checks do not claim vehicle-identity AI validation.
 

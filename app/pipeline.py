@@ -234,6 +234,8 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 analysis.masks,
                 profile_confidence=analysis.report.body_paint_profile.confidence,
                 confidence_threshold=settings.paint_group_uncertain_threshold,
+                seed_mask=analysis.surface.seeds,
+                hard_protected_mask=analysis.surface.hard_protected,
             )
             if analysis_warnings:
                 analysis.report.warnings.extend(analysis_warnings)

@@ -199,6 +199,10 @@ def complete_body_surface(
         mean_boundary_gradient = (
             float(np.mean(gradient[boundary])) if np.any(boundary) else 0.0
         )
+        boundary_ok = (
+            mean_boundary_gradient <= settings.body_growth_max_gradient * 1.5
+            or accepted_boundary >= 0.45
+        )
         enclosed = (
             area <= settings.body_completion_max_hole_area
             and accepted_boundary >= 0.45
@@ -207,6 +211,7 @@ def complete_body_surface(
             accepted_boundary >= settings.body_region_min_boundary_ratio
             and global_similarity >= 0.25
             and consistency >= 0.5
+            and boundary_ok
         )
         accepted_region = enclosed or coherent
         if accepted_region:
@@ -254,7 +259,7 @@ def complete_body_surface(
             continue
         gap = gap_labels == index
         boundary = (cv2.dilate(_mask(gap), kernel) > 0) & ~gap
-        if np.mean(accepted[boundary]) >= 0.6:
+        if np.any(boundary) and np.mean(accepted[boundary]) >= 0.6:
             accepted |= gap
 
     accepted &= safe & ~protected

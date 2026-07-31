@@ -314,7 +314,15 @@ class PaintAnalysisTest(unittest.TestCase):
         result = analyse_paint_groups(
             image, np.full((30, 30), 255, np.uint8), {}, SETTINGS
         )
-        self.assertEqual(check_paint_analysis(result.group_masks, result.masks), [])
+        self.assertEqual(
+            check_paint_analysis(
+                result.group_masks,
+                result.masks,
+                seed_mask=result.surface.seeds,
+                hard_protected_mask=result.surface.hard_protected,
+            ),
+            [],
+        )
 
     def test_old_and_new_metadata_round_trip_and_legacy_mask_fallback(self) -> None:
         legacy = AssetBundle(
@@ -364,8 +372,8 @@ class PaintAnalysisTest(unittest.TestCase):
             request_hash(dual, renderer="deterministic", pipeline_version="9"),
         )
         self.assertNotEqual(
-            request_hash(body, renderer="deterministic", pipeline_version="8"),
             request_hash(body, renderer="deterministic", pipeline_version="9"),
+            request_hash(body, renderer="deterministic", pipeline_version="10"),
         )
 
     def test_deterministic_render_preserves_roof_until_targeted(self) -> None:

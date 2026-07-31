@@ -29,6 +29,8 @@ def check_paint_analysis(
     *,
     profile_confidence: float | None = None,
     confidence_threshold: float = 0.45,
+    seed_mask: np.ndarray | None = None,
+    hard_protected_mask: np.ndarray | None = None,
 ) -> list[str]:
     warnings = []
     occupied = np.zeros(masks.editable.shape, np.uint8)
@@ -48,6 +50,14 @@ def check_paint_analysis(
         warnings.append("protected_groups_override_editable_groups_failed")
     if np.any((masks.uncertain >= 128) & (masks.editable >= 128)):
         warnings.append("uncertain_groups_not_editable_failed")
+    if seed_mask is not None and np.any(
+        (seed_mask >= 128) & (masks.editable < 128)
+    ):
+        warnings.append("main_body_seeds_not_preserved_failed")
+    if hard_protected_mask is not None and np.any(
+        (hard_protected_mask >= 128) & (masks.editable >= 128)
+    ):
+        warnings.append("surface_growth_crossed_hard_protection_failed")
     for group, warning in (
         (PaintGroup.BODY_COLOURED_HANDLE, "body_coloured_handles_follow_request_failed"),
         (
