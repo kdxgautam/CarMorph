@@ -39,10 +39,17 @@ def _normalise(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
 
 
-def _part_group(class_name: object) -> str | None:
+def _part_group(class_name: object, view: ViewName | None = None) -> str | None:
     name = _normalise(class_name)
+    if view in {"left", "right"} and name in {"windshield", "back_windshield"}:
+        return None
     return next(
-        (group for group, aliases in PART_GROUPS.items() if name in aliases),
+        (
+            group
+            for group, aliases in PART_GROUPS.items()
+            if name in aliases
+            or re.sub(r"^(?:left|right)_", "", name) in aliases
+        ),
         None,
     )
 
@@ -185,6 +192,7 @@ def detect_car_and_parts(
             ).predict(
                 crop,
                 conf=settings.car_parts_confidence,
+                imgsz=settings.car_parts_image_size,
                 verbose=False,
             )[0]
     except PipelineError:
@@ -207,7 +215,7 @@ def detect_car_and_parts(
             polygons,
         ):
             class_name = _normalise(specialised_result.names[int(class_id)])
-            group = _part_group(class_name)
+            group = _part_group(class_name, view)
             x1, y1, x2, y2 = (
                 max(car_x1, min(car_x2, car_x1 + float(xyxy[0]))),
                 max(car_y1, min(car_y2, car_y1 + float(xyxy[1]))),
@@ -275,7 +283,7 @@ def detect_car_and_parts(
             part_result.boxes.conf.cpu().tolist(),
             part_result.boxes.cls.cpu().tolist(),
         ):
-            group = _part_group(part_result.names[int(class_id)])
+            group = _part_group(part_result.names[int(class_id)], view)
             x1, y1, x2, y2 = (
                 max(car_x1, min(car_x2, car_x1 + float(xyxy[0]))),
                 max(car_y1, min(car_y2, car_y1 + float(xyxy[1]))),

@@ -8,6 +8,8 @@ PART_GROUPS = {
     "wheels": {
         "wheel",
         "wheels",
+        "front_wheel",
+        "back_wheel",
         "car_wheel",
         "alloy",
         "alloy_wheel",
@@ -21,6 +23,9 @@ PART_GROUPS = {
         "glass",
         "front_glass",
         "back_glass",
+        "front_window",
+        "back_window",
+        "back_windshield",
         "rear_glass",
         "windscreen",
         "windshield",
@@ -47,6 +52,7 @@ PART_GROUPS = {
         "car_headlight",
         "headlights",
         "taillight",
+        "tail_light",
         "car_taillight",
         "taillights",
         "fog_lamp",
@@ -135,6 +141,7 @@ class Settings:
     roboflow_sam2_version_id: str
     yolo_model_id: str
     car_parts_model_id: str
+    car_parts_image_size: int
     yolo_car_class: str
     yolo_confidence: float
     competing_car_ratio: float
@@ -185,8 +192,9 @@ class Settings:
                 ),
                 yolo_model_id=os.getenv("YOLO_MODEL_ID", "yolov8s-world.pt"),
                 car_parts_model_id=os.getenv(
-                    "CAR_PARTS_MODEL_ID", "models/carparts-seg.pt"
+                    "CAR_PARTS_MODEL_ID", "models/carparts-v2.pt"
                 ),
+                car_parts_image_size=int(os.getenv("CAR_PARTS_IMAGE_SIZE", "896")),
                 yolo_car_class=os.getenv("YOLO_CAR_CLASS", "car"),
                 yolo_confidence=float(os.getenv("YOLO_CONFIDENCE", "0.35")),
                 competing_car_ratio=float(
@@ -263,6 +271,12 @@ class Settings:
                 503,
             ) from exc
 
+        if settings.car_parts_image_size < 1:
+            raise PipelineError(
+                "configuration_error",
+                "CAR_PARTS_IMAGE_SIZE must be positive",
+                503,
+            )
         if settings.mask_kernel_size < 1 or settings.mask_kernel_size % 2 == 0:
             raise PipelineError(
                 "configuration_error",

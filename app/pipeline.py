@@ -44,8 +44,8 @@ from app.schemas import (
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"11"
-PAINT_ANALYSIS_VERSION = "paint-groups-v3"
+PIPELINE_VERSION = b"14"
+PAINT_ANALYSIS_VERSION = "paint-groups-v4"
 
 PAINT_GROUP_FILENAMES = {
     PaintGroup.MAIN_BODY_PAINT: "main-body-paint-mask.png",
@@ -93,10 +93,6 @@ def _refine_side_windows(
     mirrors: np.ndarray | None,
 ) -> np.ndarray:
     windows = np.where(windows >= 128, 255, 0).astype(np.uint8)
-    windows = cv2.dilate(
-        windows,
-        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
-    )
     if mirrors is not None:
         windows[mirrors >= 128] = 0
     return windows
@@ -236,6 +232,11 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 confidence_threshold=settings.paint_group_uncertain_threshold,
                 seed_mask=analysis.surface.seeds,
                 hard_protected_mask=analysis.surface.hard_protected,
+                paint_like_residual_mask=analysis.paint_like_residual,
+                minimum_residual_pixels=max(
+                    settings.body_fragment_min_area,
+                    round(np.count_nonzero(full_car >= 128) * 0.005),
+                ),
             )
             if analysis_warnings:
                 analysis.report.warnings.extend(analysis_warnings)

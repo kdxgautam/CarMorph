@@ -45,6 +45,7 @@ class PaintAnalysisResult:
     masks: PaintAnalysisMasks
     anchors: np.ndarray
     surface: SurfaceCompletionResult
+    paint_like_residual: np.ndarray
 
 
 def _relation(
@@ -88,6 +89,7 @@ def analyse_paint_groups(
     groups: dict[PaintGroup, np.ndarray] = {}
     regions = []
     claimed = np.zeros(shape, bool)
+    paint_like_residual = np.zeros(shape, np.uint8)
 
     def add(group: PaintGroup, mask: np.ndarray) -> None:
         binary = (mask >= 128) & (full_car >= 128) & ~claimed
@@ -234,11 +236,14 @@ def analyse_paint_groups(
 
     bumper = part_masks.get("bumper")
     if bumper is not None:
-        similarity = chroma_distance(lab, profile_lab)
-        painted = (bumper >= 128) & (
-            similarity <= settings.body_paint_chroma_threshold
+        bumper_surface = complete_body_surface(
+            lab,
+            bumper,
+            np.zeros_like(bumper),
+            profile,
+            settings,
         )
-        add(PaintGroup.PAINTED_BUMPER_SECTION, np.where(painted, 255, 0).astype(np.uint8))
+        add(PaintGroup.PAINTED_BUMPER_SECTION, bumper_surface.main_body)
         add(PaintGroup.BLACK_PLASTIC_TRIM, bumper)
 
     residual = (full_car >= 128) & ~claimed
@@ -262,28 +267,73 @@ def analyse_paint_groups(
             np.where(unclassified, 255, 0).astype(np.uint8)
         )
         minimum_secondary_area = max(100, round(car_pixels * 0.01))
+        adjacency_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         for index in range(1, component_count):
             component = labels == index
             component_mask = np.where(component, 255, 0).astype(np.uint8)
             material, confidence, reasons = classify_material(
                 image, component_mask, "body_region"
             )
+            similarity, chroma, lightness = _relation(
+                lab, component_mask, profile_lab, settings.body_paint_chroma_threshold
+            )
+            near_main = cv2.dilate(
+                np.where(main, 255, 0).astype(np.uint8), adjacency_kernel
+            ) > 0
+            adjacency = float(
+                np.count_nonzero(component & near_main)
+                / max(1, np.count_nonzero(component))
+            )
+            paint_like = material == MaterialType.PAINTED_SURFACE
+            matching = (
+                paint_like
+                and chroma <= settings.body_paint_chroma_threshold
+                and adjacency >= settings.body_region_min_boundary_ratio
+            )
             group = (
-                PaintGroup.SECONDARY_BODY_PAINT
-                if stats[index, cv2.CC_STAT_AREA] >= minimum_secondary_area
-                and material == MaterialType.PAINTED_SURFACE
+                PaintGroup.MAIN_BODY_PAINT
+                if matching
+                else PaintGroup.SECONDARY_BODY_PAINT
+                if paint_like
+                and chroma > settings.body_paint_chroma_threshold
+                and stats[index, cv2.CC_STAT_AREA] >= minimum_secondary_area
                 else PaintGroup.UNKNOWN
             )
+            if (
+                paint_like
+                and chroma <= settings.body_paint_chroma_threshold
+                and not matching
+            ):
+                paint_like_residual[component] = 255
             add(group, component_mask)
+            if matching:
+                main |= component
+                reasons += ["main_body_chroma_match", "adjacent_main_body_region"]
+            elif group == PaintGroup.SECONDARY_BODY_PAINT:
+                reasons += ["contrasting_body_chroma"]
             regions.append(
                 RegionClassification(
                     region_id=f"body_region_{index}",
                     part_type="body_region",
                     paint_group=group,
                     material_type=material,
-                    confidence=confidence,
+                    body_colour_similarity=round(similarity, 4),
+                    lightness_difference=round(lightness, 3),
+                    confidence=round(
+                        min(
+                            confidence,
+                            similarity
+                            if matching
+                            else 1 - similarity
+                            if group == PaintGroup.SECONDARY_BODY_PAINT
+                            else max(similarity, adjacency),
+                        ),
+                        4,
+                    ),
                     paintability=(
-                        Paintability.SEPARATELY_EDITABLE
+                        Paintability.EDITABLE
+                        if group == PaintGroup.MAIN_BODY_PAINT
+                        else Paintability.SEPARATELY_EDITABLE
                         if group == PaintGroup.SECONDARY_BODY_PAINT
                         else Paintability.UNCERTAIN
                     ),
@@ -336,4 +386,5 @@ def analyse_paint_groups(
         masks,
         anchors,
         surface,
+        paint_like_residual,
     )

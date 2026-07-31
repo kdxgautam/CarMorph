@@ -31,6 +31,8 @@ def check_paint_analysis(
     confidence_threshold: float = 0.45,
     seed_mask: np.ndarray | None = None,
     hard_protected_mask: np.ndarray | None = None,
+    paint_like_residual_mask: np.ndarray | None = None,
+    minimum_residual_pixels: int = 64,
 ) -> list[str]:
     warnings = []
     occupied = np.zeros(masks.editable.shape, np.uint8)
@@ -58,6 +60,12 @@ def check_paint_analysis(
         (hard_protected_mask >= 128) & (masks.editable >= 128)
     ):
         warnings.append("surface_growth_crossed_hard_protection_failed")
+    if (
+        paint_like_residual_mask is not None
+        and np.count_nonzero(paint_like_residual_mask >= 128)
+        >= minimum_residual_pixels
+    ):
+        warnings.append("paint_like_residual_region_detected")
     for group, warning in (
         (PaintGroup.BODY_COLOURED_HANDLE, "body_coloured_handles_follow_request_failed"),
         (

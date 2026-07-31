@@ -236,6 +236,7 @@ class PaintAnalysisTest(unittest.TestCase):
         bumper_pixels = np.argwhere(parts["bumper"] > 0)
         lower = bumper_pixels[len(bumper_pixels) // 2 :]
         pixels[lower[:, 0], lower[:, 1]] = (20, 20, 20)
+        pixels[80:84, 45:75] = (245, 110, 75)
         result = analyse_paint_groups(
             Image.fromarray(pixels),
             np.full((100, 120), 255, np.uint8),
@@ -248,6 +249,14 @@ class PaintAnalysisTest(unittest.TestCase):
         self.assertIn(PaintGroup.GLOSSY_BLACK_TRIM, result.group_masks)
         self.assertIn(PaintGroup.PAINTED_BUMPER_SECTION, result.group_masks)
         self.assertIn(PaintGroup.BLACK_PLASTIC_TRIM, result.group_masks)
+        self.assertGreater(
+            np.mean(
+                result.group_masks[PaintGroup.PAINTED_BUMPER_SECTION][80:84, 45:75]
+                > 0
+            ),
+            0.9,
+        )
+        self.assertFalse(np.any(result.masks.editable[88:94, 30:90]))
 
         pixels[parts["mirrors"] > 0] = (25, 45, 180)
         contrasting = analyse_paint_groups(
@@ -270,6 +279,26 @@ class PaintAnalysisTest(unittest.TestCase):
         self.assertIn(PaintGroup.SECONDARY_BODY_PAINT, result.group_masks)
         secondary = result.group_masks[PaintGroup.SECONDARY_BODY_PAINT]
         self.assertFalse(np.any((secondary > 0) & (result.masks.editable > 0)))
+
+    def test_adjacent_disconnected_same_paint_region_joins_main_body(self) -> None:
+        pixels = np.full((50, 80, 3), (180, 35, 30), np.uint8)
+        pixels[2] = (180, 35, 30)
+        pixels[3] = (25, 60, 190)
+        settings = SimpleNamespace(**vars(SETTINGS))
+        settings.body_completion_kernel_size = 1
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((50, 80), 255, np.uint8),
+            {},
+            settings,
+        )
+
+        self.assertGreater(
+            np.mean(result.group_masks[PaintGroup.MAIN_BODY_PAINT][2] > 0),
+            0.9,
+        )
+        self.assertFalse(np.any(result.paint_like_residual[2]))
 
     def test_chrome_and_contrasting_handles_are_not_editable(self) -> None:
         pixels = np.full((80, 100, 3), (180, 35, 30), np.uint8)
@@ -324,6 +353,17 @@ class PaintAnalysisTest(unittest.TestCase):
                 hard_protected_mask=result.surface.hard_protected,
             ),
             [],
+        )
+        residual = np.zeros((30, 30), np.uint8)
+        residual[5:15, 5:15] = 255
+        self.assertIn(
+            "paint_like_residual_region_detected",
+            check_paint_analysis(
+                result.group_masks,
+                result.masks,
+                paint_like_residual_mask=residual,
+                minimum_residual_pixels=64,
+            ),
         )
 
     def test_old_and_new_metadata_round_trip_and_legacy_mask_fallback(self) -> None:

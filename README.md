@@ -57,10 +57,10 @@ Download the pinned car-parts weights:
 mkdir -p models
 
 curl -L --fail \
-  https://huggingface.co/Majorburn/yolov11-carparts-seg/resolve/cff8060ca063b38dc03aa9aac596f1795e0e2db5/best.pt \
-  -o models/carparts-seg.pt
+  https://huggingface.co/mitbersh/car-parts-segmentation-m/resolve/0b9acbc20393a9c8d19a81405e9ba682b5eb3a69/parts_segmentation.pt \
+  -o models/carparts-v2.pt
 
-echo '6759cf983e0bdefaa95d2d3fc6b37f89d3718a319c08617c3c7a339e18fdc3cd  models/carparts-seg.pt' \
+echo 'df8fb1aef65a91c32796205d56104c92d00cf863ed650f65437608d477ff400b  models/carparts-v2.pt' \
   | shasum -a 256 -c -
 ```
 
@@ -222,6 +222,9 @@ morphological completion recover coherent highlights, shadows, narrow strips,
 and small internal gaps while retaining large unrelated colour regions. A final
 chroma-only boundary pass tolerates strong lightness changes at panel edges
 without relaxing the global candidate or hard-protection constraints.
+Residual painted regions join the main body only when both their LAB chroma
+and spatial adjacency match; large chromatically different regions remain
+secondary paint.
 
 `surface-completion.json` records region decisions, seed/final pixel counts,
 recovered pixels, connected-component counts, small-fragment counts, internal
@@ -234,8 +237,8 @@ painted and match its profile confidently. Contrasting painted variants remain
 separate. Chrome or plastic evidence protects them. Pillar semantics strongly
 favour glossy trim protection. A detected roof that differs from the main paint
 becomes `contrast_roof_paint`; it changes only when `roof_colour` is present.
-Bumper pixels are split between chroma-related painted sections and protected
-cladding instead of treating the bumper as one material.
+Bumper masks run through the same constrained surface completion so reflections
+remain painted while unrelated dark cladding stays protected.
 
 Black main paint is retained when it is the dominant eroded panel profile;
 detected trim semantics plus dark neutral appearance identify probable plastic.
@@ -351,6 +354,7 @@ Initial deterministic checks verify:
 - the main-body profile and mask meet configured confidence/non-empty checks
 - every strict seed survives in the final editable body mask
 - surface growth never crosses hard protection
+- sizeable main-colour-compatible residual regions produce a completeness warning
 
 These checks do not claim vehicle-identity AI validation.
 

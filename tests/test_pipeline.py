@@ -27,6 +27,7 @@ from app.detection import (
     CarDetection,
     PartDetection,
     _deduplicate,
+    _part_group,
     _side_window_prompts,
     select_primary_car,
     validate_view,
@@ -138,6 +139,14 @@ class PipelineTest(unittest.TestCase):
         wheel = PartDetection("wheels", (5, 5, 105, 105), 0.8)
         self.assertEqual(_deduplicate([weaker, wheel, stronger]), [stronger, wheel])
 
+    def test_side_aware_replacement_model_labels_are_mapped(self) -> None:
+        self.assertEqual(_part_group("left_front-wheel"), "wheels")
+        self.assertEqual(_part_group("right_back-window"), "windows")
+        self.assertEqual(_part_group("left_tail-light"), "lights")
+        self.assertEqual(_part_group("right_mirror"), "mirrors")
+        self.assertIsNone(_part_group("windshield", "right"))
+        self.assertEqual(_part_group("windshield", "front"), "windows")
+
     def test_side_windows_use_upper_deduplicated_doors(self) -> None:
         front = PartDetection("doors", (10, 20, 50, 100), 0.9)
         duplicate = PartDetection("doors", (12, 22, 52, 102), 0.5)
@@ -208,7 +217,8 @@ class PipelineTest(unittest.TestCase):
 
         self.assertEqual(refined[40, 47], 0)
         self.assertEqual(refined[35, 15], 0)
-        self.assertEqual(refined[19, 30], 255)
+        self.assertEqual(refined[19, 30], 0)
+        self.assertEqual(refined[20, 30], 255)
         self.assertNotIn("dark_trim", NON_PAINTABLE_PART_GROUPS)
 
     def test_side_image_rejects_front_view(self) -> None:
