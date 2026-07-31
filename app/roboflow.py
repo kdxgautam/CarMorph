@@ -26,33 +26,53 @@ def segment_boxes(
     image_jpeg: bytes,
     boxes: list[tuple[float, float, float, float]],
     settings: Settings,
+    concepts: list[str] | None = None,
 ) -> list[list]:
-    prompts = []
-    for x1, y1, x2, y2 in boxes:
-        prompts.append(
-            {
-                "box": {
-                    "x": (x1 + x2) / 2,
-                    "y": (y1 + y2) / 2,
-                    "width": x2 - x1,
-                    "height": y2 - y1,
+    segmenter = getattr(settings, "roboflow_segmenter", "sam2")
+    if segmenter == "sam3":
+        if concepts is None or len(concepts) != len(boxes):
+            raise PipelineError(
+                "configuration_error", "SAM 3 requires one concept per box", 503
+            )
+        payload = {
+            "image": {
+                "type": "base64",
+                "value": base64.b64encode(image_jpeg).decode(),
+            },
+            "prompts": [{"type": "text", "text": concept} for concept in concepts],
+            "model_id": settings.roboflow_sam3_model_id,
+            "output_prob_thresh": 0.5,
+            "format": "polygon",
+        }
+        endpoint = "/sam3/concept_segment"
+    else:
+        prompts = []
+        for x1, y1, x2, y2 in boxes:
+            prompts.append(
+                {
+                    "box": {
+                        "x": (x1 + x2) / 2,
+                        "y": (y1 + y2) / 2,
+                        "width": x2 - x1,
+                        "height": y2 - y1,
+                    }
                 }
-            }
-        )
+            )
 
-    payload = {
-        "image": {
-            "type": "base64",
-            "value": base64.b64encode(image_jpeg).decode(),
-        },
-        "prompts": {"prompts": prompts},
-        "sam2_version_id": settings.roboflow_sam2_version_id,
-        "multimask_output": False,
-        "format": "json",
-    }
+        payload = {
+            "image": {
+                "type": "base64",
+                "value": base64.b64encode(image_jpeg).decode(),
+            },
+            "prompts": {"prompts": prompts},
+            "sam2_version_id": settings.roboflow_sam2_version_id,
+            "multimask_output": False,
+            "format": "json",
+        }
+        endpoint = "/sam2/segment_image"
     try:
         response = requests.post(
-            f"{settings.roboflow_api_url}/sam2/segment_image",
+            f"{settings.roboflow_api_url}{endpoint}",
             params={"api_key": settings.roboflow_api_key},
             json=payload,
             timeout=settings.roboflow_timeout,
@@ -60,36 +80,65 @@ def segment_boxes(
     except requests.Timeout as exc:
         raise PipelineError(
             "sam_api_timeout",
-            f"Roboflow SAM 2 timed out after {settings.roboflow_timeout:g} seconds",
+            f"Roboflow {segmenter.upper()} timed out after {settings.roboflow_timeout:g} seconds",
             504,
         ) from exc
     except requests.ConnectionError as exc:
         raise PipelineError(
-            "sam_api_error", "Could not connect to Roboflow SAM 2", 502
+            "sam_api_error", f"Could not connect to Roboflow {segmenter.upper()}", 502
         ) from exc
     except requests.RequestException as exc:
-        raise PipelineError("sam_api_error", "Roboflow SAM 2 request failed", 502) from exc
+        raise PipelineError(
+            "sam_api_error", f"Roboflow {segmenter.upper()} request failed", 502
+        ) from exc
 
-    predictions = _json_response(response, "sam_api_error").get("predictions")
-    if not isinstance(predictions, list) or len(predictions) != len(prompts):
+    data = _json_response(response, "sam_api_error")
+    predictions = (
+        data.get("prompt_results") if segmenter == "sam3" else data.get("predictions")
+    )
+    if not isinstance(predictions, list) or len(predictions) != len(boxes):
         raise PipelineError(
             "invalid_sam_response",
-            "SAM 2 returned an unexpected number of predictions",
+            f"{segmenter.upper()} returned an unexpected number of predictions",
             502,
         )
 
     masks = []
-    for prediction in predictions:
+    for index, prediction in enumerate(predictions):
+        if segmenter == "sam3":
+            items = prediction.get("predictions") if isinstance(prediction, dict) else None
+            polygons = [
+                polygon
+                for item in items or []
+                if isinstance(item, dict)
+                and item.get("format", "polygon") == "polygon"
+                and isinstance(item.get("masks"), list)
+                for polygon in item["masks"]
+            ]
+            if polygons or index:
+                masks.append(polygons)
+                continue
+        else:
+            polygons = prediction.get("masks") if isinstance(prediction, dict) else None
+            if (
+                isinstance(prediction, dict)
+                and prediction.get("format", "polygon") == "polygon"
+                and isinstance(polygons, list)
+                and polygons
+            ):
+                masks.append(polygons)
+                continue
         if (
-            not isinstance(prediction, dict)
-            or prediction.get("format", "polygon") != "polygon"
-            or not isinstance(prediction.get("masks"), list)
-            or not prediction["masks"]
+            segmenter == "sam3" and index == 0
         ):
             raise PipelineError(
                 "invalid_sam_response",
-                "SAM 2 returned an invalid polygon mask",
+                "SAM3 did not find the primary car",
                 502,
             )
-        masks.append(prediction["masks"])
+        raise PipelineError(
+            "invalid_sam_response",
+            f"{segmenter.upper()} returned an invalid polygon mask",
+            502,
+        )
     return masks

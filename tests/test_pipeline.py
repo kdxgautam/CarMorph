@@ -295,6 +295,39 @@ class PipelineTest(unittest.TestCase):
                 segment_boxes(b"image", [(0, 0, 10, 10)], settings)
         self.assertEqual(raised.exception.code, "sam_api_timeout")
 
+    def test_sam3_uses_concepts_and_returns_polygon_masks(self) -> None:
+        settings = SimpleNamespace(
+            roboflow_api_url="https://serverless.roboflow.com",
+            roboflow_api_key="test-key",
+            roboflow_segmenter="sam3",
+            roboflow_sam3_model_id="sam3/sam3_final",
+            roboflow_timeout=180,
+        )
+        response = Mock(ok=True)
+        response.json.return_value = {
+            "prompt_results": [
+                {
+                    "predictions": [
+                        {
+                            "format": "polygon",
+                            "masks": [[[0, 0], [10, 0], [10, 10]]],
+                        }
+                    ]
+                }
+            ]
+        }
+        with patch("app.roboflow.requests.post", return_value=response) as post:
+            masks = segment_boxes(
+                b"image", [(0, 0, 10, 10)], settings, ["car"]
+            )
+
+        self.assertEqual(masks, [[[[0, 0], [10, 0], [10, 10]]]])
+        self.assertTrue(post.call_args.args[0].endswith("/sam3/concept_segment"))
+        self.assertEqual(
+            post.call_args.kwargs["json"]["prompts"],
+            [{"type": "text", "text": "car"}],
+        )
+
     def test_surface_edit_schema_validation(self) -> None:
         request = SurfaceEditRequest(
             body_colour="#183A63",

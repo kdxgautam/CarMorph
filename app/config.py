@@ -138,7 +138,9 @@ YOLO_PART_PROMPTS_BY_VIEW = {
 class Settings:
     roboflow_api_url: str
     roboflow_api_key: str
+    roboflow_segmenter: str
     roboflow_sam2_version_id: str
+    roboflow_sam3_model_id: str
     yolo_model_id: str
     car_parts_model_id: str
     car_parts_image_size: int
@@ -187,8 +189,12 @@ class Settings:
                     "ROBOFLOW_API_URL", "https://serverless.roboflow.com"
                 ).rstrip("/"),
                 roboflow_api_key=os.environ["ROBOFLOW_API_KEY"],
+                roboflow_segmenter=os.getenv("ROBOFLOW_SEGMENTER", "sam3").lower(),
                 roboflow_sam2_version_id=os.getenv(
                     "ROBOFLOW_SAM2_VERSION_ID", "hiera_small"
+                ),
+                roboflow_sam3_model_id=os.getenv(
+                    "ROBOFLOW_SAM3_MODEL_ID", "sam3/sam3_final"
                 ),
                 yolo_model_id=os.getenv("YOLO_MODEL_ID", "yolov8s-world.pt"),
                 car_parts_model_id=os.getenv(
@@ -276,6 +282,10 @@ class Settings:
                 "configuration_error",
                 "CAR_PARTS_IMAGE_SIZE must be positive",
                 503,
+            )
+        if settings.roboflow_segmenter not in {"sam2", "sam3"}:
+            raise PipelineError(
+                "configuration_error", "ROBOFLOW_SEGMENTER must be sam2 or sam3", 503
             )
         if settings.mask_kernel_size < 1 or settings.mask_kernel_size % 2 == 0:
             raise PipelineError(

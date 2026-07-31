@@ -44,7 +44,7 @@ from app.schemas import (
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"14"
+PIPELINE_VERSION = b"15"
 PAINT_ANALYSIS_VERSION = "paint-groups-v4"
 
 PAINT_GROUP_FILENAMES = {
@@ -148,13 +148,30 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 )
 
             prompts = [tuple(float(value) for value in car.box)]
+            concepts = ["car"]
             prompt_parts: list[PartDetection | None] = [None]
             for part in parts:
                 if part.polygon is None:
                     prompts.append(part.box)
+                    concepts.append(
+                        {
+                            "wheels": "car wheel",
+                            "windows": "car window",
+                            "plate": "license plate",
+                            "lights": "car light",
+                            "grille": "car grille",
+                            "trim": "car trim",
+                            "bumper": "car bumper",
+                            "mirrors": "car side mirror",
+                            "handles": "car door handle",
+                            "roof": "car roof",
+                            "spoiler": "car spoiler",
+                            "pillars": "car window pillar",
+                        }.get(part.group, f"car {part.group}")
+                    )
                     prompt_parts.append(part)
 
-            polygons = segment_boxes(image_jpeg, prompts, settings)
+            polygons = segment_boxes(image_jpeg, prompts, settings, concepts)
             masks_by_group: dict[str, list[np.ndarray]] = defaultdict(list)
             for part, mask_polygons in zip(prompt_parts, polygons):
                 group = part.group if part is not None else "full_car"
@@ -362,7 +379,11 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 models={
                     "yolo_world": settings.yolo_model_id,
                     "car_parts": settings.car_parts_model_id,
-                    "sam2": settings.roboflow_sam2_version_id,
+                    "segmenter": (
+                        settings.roboflow_sam3_model_id
+                        if settings.roboflow_segmenter == "sam3"
+                        else f"sam2/{settings.roboflow_sam2_version_id}"
+                    ),
                 },
                 warnings=(
                     [

@@ -16,7 +16,8 @@ suitable for multi-worker production deployment.
    grille, and trim.
 2. A pretrained car-parts YOLO segmentation model detects windows, lights,
    bumpers, mirrors, and wheels.
-3. Roboflow SAM 2 refines full-car and box-prompt masks.
+3. Roboflow SAM 3 segments the full car and text-prompt fallback parts. Set
+   `ROBOFLOW_SEGMENTER=sam2` to restore SAM 2 box-prompt refinement.
 4. OpenCV cleans masks and stores full-car and reusable part masks.
 5. Body-paint analysis erodes safe panel interiors, rejects extreme lighting,
    estimates a dominant LAB/chroma profile, classifies detected parts by
