@@ -84,7 +84,10 @@ def analyse_paint_groups(
         min_samples=settings.anchor_min_sample_count,
         chroma_threshold=settings.body_paint_chroma_threshold,
     )
-    lab = rgb_to_lab(np.asarray(image.convert("RGB")))
+    rgb = np.asarray(image.convert("RGB"))
+    lab = rgb_to_lab(rgb)
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    grey = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     profile_lab = np.asarray(profile.median_lab)
     groups: dict[PaintGroup, np.ndarray] = {}
     regions = []
@@ -100,10 +103,98 @@ def analyse_paint_groups(
             )
             claimed[binary] = True
 
+    body_is_chromatic = len(profile_lab) and np.linalg.norm(profile_lab[1:]) > 20
+
+    def painted_part_edge(mask: np.ndarray, kernel_size: int = 5) -> np.ndarray:
+        binary = mask >= 128
+        interior = cv2.erode(
+            np.where(binary, 255, 0).astype(np.uint8),
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
+            ),
+        ) >= 128
+        chroma_limit = 60 if body_is_chromatic else settings.body_growth_chroma_threshold
+        lightness_limit = 30 if body_is_chromatic else min(
+            settings.body_paint_lightness_threshold, 20
+        )
+        compatible = (
+            (chroma_distance(lab, profile_lab) <= chroma_limit)
+            & (np.abs(lab[:, :, 0] - profile_lab[0]) <= lightness_limit)
+        )
+        if body_is_chromatic:
+            compatible &= hsv[:, :, 1] >= 75
+        outside = (~binary) & (full_car >= 128) & compatible
+        count = cv2.boxFilter(
+            outside.astype(np.float32), -1, (3, 3), normalize=False
+        )
+        sums = np.stack(
+            [
+                cv2.boxFilter(
+                    lab[:, :, channel] * outside,
+                    -1,
+                    (3, 3),
+                    normalize=False,
+                )
+                for channel in range(3)
+            ],
+            axis=2,
+        )
+        local_mean = sums / np.maximum(count[:, :, None], 1)
+        return (
+            binary
+            & ~interior
+            & compatible
+            & (count > 0)
+            & (np.linalg.norm(lab - local_mean, axis=2) <= 20)
+        )
+
     for part_type, group in PROTECTED_SEMANTICS.items():
         mask = part_masks.get(part_type)
         if mask is None:
             continue
+        if part_type == "windows" and len(profile_lab):
+            binary = mask >= 128
+            interior = cv2.erode(
+                np.where(binary, 255, 0).astype(np.uint8),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            ) >= 128
+            painted_edge = (
+                binary
+                & ~interior
+                & (
+                    chroma_distance(lab, profile_lab)
+                    <= settings.body_growth_chroma_threshold
+                )
+                & (
+                    np.abs(lab[:, :, 0] - profile_lab[0])
+                    <= min(settings.body_paint_lightness_threshold, 20)
+                )
+            )
+            if body_is_chromatic:
+                painted_edge |= painted_part_edge(mask)
+            mask = np.where(binary & ~painted_edge, 255, 0).astype(np.uint8)
+        elif part_type == "lights" and body_is_chromatic:
+            binary = mask >= 128
+            interior = cv2.erode(
+                np.where(binary, 255, 0).astype(np.uint8),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            ) >= 128
+            candidate = (
+                binary
+                & ~interior
+                & (chroma_distance(lab, profile_lab) <= 60)
+                & (np.abs(lab[:, :, 0] - profile_lab[0]) <= 30)
+                & (hsv[:, :, 1] >= 75)
+            )
+            painted_edge = np.zeros(shape, bool)
+            count, labels = cv2.connectedComponents(
+                np.where(binary, 255, 0).astype(np.uint8)
+            )
+            for index in range(1, count):
+                component = labels == index
+                if np.median(hsv[:, :, 1][component]) < 75:
+                    painted_edge |= candidate & component
+            mask = np.where(binary & ~painted_edge, 255, 0).astype(np.uint8)
         material, confidence, reasons = classify_material(image, mask, part_type)
         add(group, mask)
         regions.append(
@@ -121,6 +212,27 @@ def analyse_paint_groups(
     for part_type in ("trim",):
         mask = part_masks.get(part_type)
         if mask is None:
+            continue
+        painted_edge = (
+            (mask >= 128)
+            & (
+                chroma_distance(lab, profile_lab)
+                <= settings.body_growth_chroma_threshold
+            )
+            & (
+                np.abs(lab[:, :, 0] - profile_lab[0])
+                <= settings.body_paint_lightness_threshold
+            )
+            & (hsv[:, :, 1] >= 50)
+            if body_is_chromatic
+            else np.zeros(shape, bool)
+        )
+        trim_pixels = (mask >= 128) & (
+            ((grey < 100) & (hsv[:, :, 1] < 100))
+            | (hsv[:, :, 1] < 35)
+        ) & ~painted_edge
+        mask = np.where(trim_pixels, 255, 0).astype(np.uint8)
+        if not np.any(mask):
             continue
         material, confidence, reasons = classify_material(image, mask, part_type)
         group = (
@@ -143,12 +255,119 @@ def analyse_paint_groups(
             )
         )
 
-    configurable = {
-        "handles": (PaintGroup.BODY_COLOURED_HANDLE, PaintGroup.CONTRASTING_HANDLE),
-        "mirrors": (
+    for part_type, matching_group, other_group in (
+        (
+            "handles",
+            PaintGroup.BODY_COLOURED_HANDLE,
+            PaintGroup.CONTRASTING_HANDLE,
+        ),
+        (
+            "mirrors",
             PaintGroup.BODY_COLOURED_MIRROR_CAP,
             PaintGroup.CONTRASTING_MIRROR_CAP,
         ),
+    ):
+        mask = part_masks.get(part_type)
+        if mask is None:
+            continue
+        material, material_confidence, reasons = classify_material(
+            image, mask, part_type
+        )
+        binary = mask >= 128
+        painted = binary & ~((grey < 30) & (hsv[:, :, 1] < 75))
+        compatible = (
+            painted
+            & (
+                chroma_distance(lab, profile_lab)
+                <= settings.body_paint_chroma_threshold
+            )
+            if len(profile_lab)
+            else np.zeros(shape, bool)
+        )
+        minimum = max(3, round(np.count_nonzero(binary) * 0.08))
+        has_painted_pixels = np.count_nonzero(compatible) >= minimum
+        protected_group = (
+            PaintGroup.CHROME_TRIM
+            if material == MaterialType.CHROME
+            else PaintGroup.GLOSSY_BLACK_TRIM
+            if material == MaterialType.GLOSSY_PLASTIC
+            else PaintGroup.BLACK_PLASTIC_TRIM
+            if material == MaterialType.MATTE_PLASTIC
+            else None
+        )
+        if protected_group == PaintGroup.CHROME_TRIM or (
+            protected_group is not None and not has_painted_pixels
+        ):
+            add(protected_group, mask)
+            regions.append(
+                RegionClassification(
+                    region_id=part_type,
+                    part_type=part_type,
+                    paint_group=protected_group,
+                    material_type=material,
+                    confidence=material_confidence,
+                    paintability=Paintability.PROTECTED,
+                    reason_codes=reasons + ["material_overrides_colour"],
+                )
+            )
+            continue
+        if has_painted_pixels:
+            compatible_mask = np.where(compatible, 255, 0).astype(np.uint8)
+            similarity, _, lightness = _relation(
+                lab,
+                compatible_mask,
+                profile_lab,
+                settings.body_paint_chroma_threshold,
+            )
+            add(
+                matching_group,
+                np.where(painted, 255, 0).astype(np.uint8),
+            )
+            regions.append(
+                RegionClassification(
+                    region_id=f"{part_type}_painted",
+                    part_type=part_type,
+                    paint_group=matching_group,
+                    material_type=MaterialType.PAINTED_SURFACE,
+                    body_colour_similarity=round(similarity, 4),
+                    lightness_difference=round(lightness, 3),
+                    confidence=round(min(0.9, similarity), 4),
+                    paintability=Paintability.EDITABLE,
+                    reason_codes=["body_compatible_part_pixels"],
+                )
+            )
+            remaining = binary & ~painted
+        else:
+            remaining = binary
+        if not np.any(remaining):
+            continue
+        remaining_mask = np.where(remaining, 255, 0).astype(np.uint8)
+        material, confidence, reasons = classify_material(
+            image, remaining_mask, part_type
+        )
+        group = (
+            PaintGroup.CHROME_TRIM
+            if material == MaterialType.CHROME
+            else PaintGroup.GLOSSY_BLACK_TRIM
+            if material == MaterialType.GLOSSY_PLASTIC
+            else PaintGroup.BLACK_PLASTIC_TRIM
+            if material == MaterialType.MATTE_PLASTIC
+            else other_group
+        )
+        add(group, remaining_mask)
+        regions.append(
+            RegionClassification(
+                region_id=f"{part_type}_contrasting",
+                part_type=part_type,
+                paint_group=group,
+                material_type=material,
+                confidence=confidence,
+                paintability=Paintability.PROTECTED,
+                reason_codes=reasons + ["contrasting_part_pixels"],
+            )
+        )
+
+    configurable = {
         "roof": (PaintGroup.MAIN_BODY_PAINT, PaintGroup.CONTRAST_ROOF_PAINT),
         "spoiler": (PaintGroup.PAINTED_SPOILER, PaintGroup.SECONDARY_BODY_PAINT),
     }
@@ -236,14 +455,45 @@ def analyse_paint_groups(
 
     bumper = part_masks.get("bumper")
     if bumper is not None:
+        bumper_candidate = bumper.copy()
+        if body_is_chromatic:
+            bumper_candidate[
+                (grey < 80) & (hsv[:, :, 1] < 85)
+                & (
+                    chroma_distance(lab, profile_lab)
+                    > settings.body_growth_chroma_threshold
+                )
+            ] = 0
         bumper_surface = complete_body_surface(
             lab,
-            bumper,
+            bumper_candidate,
             np.zeros_like(bumper),
             profile,
             settings,
         )
-        add(PaintGroup.PAINTED_BUMPER_SECTION, bumper_surface.main_body)
+        painted_bumper = bumper_surface.main_body >= 128
+        if body_is_chromatic:
+            near_painted_bumper = cv2.dilate(
+                bumper_surface.main_body,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+            ) >= 128
+            painted_bumper |= (
+                (bumper >= 128)
+                & near_painted_bumper
+                & (
+                    chroma_distance(lab, profile_lab)
+                    <= settings.body_growth_chroma_threshold
+                )
+                & (
+                    np.abs(lab[:, :, 0] - profile_lab[0])
+                    <= settings.body_paint_lightness_threshold
+                )
+                & (hsv[:, :, 1] >= 50)
+            )
+        add(
+            PaintGroup.PAINTED_BUMPER_SECTION,
+            np.where(painted_bumper, 255, 0).astype(np.uint8),
+        )
         add(PaintGroup.BLACK_PLASTIC_TRIM, bumper)
 
     residual = (full_car >= 128) & ~claimed
@@ -263,11 +513,59 @@ def analyse_paint_groups(
         main = surface.main_body >= 128
         unclassified = residual & ~main
         add(PaintGroup.MAIN_BODY_PAINT, surface.main_body)
+        adjacency_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        fragment_chroma_threshold = settings.body_growth_chroma_threshold
+        strict_compatible = unclassified & (
+            chroma_distance(lab, profile_lab)
+            <= settings.body_paint_chroma_threshold
+        )
+        compatible = unclassified & (
+            chroma_distance(lab, profile_lab)
+            <= fragment_chroma_threshold
+        )
+        compatible_count, compatible_labels = cv2.connectedComponents(
+            np.where(compatible, 255, 0).astype(np.uint8)
+        )
+        for index in range(1, compatible_count):
+            component = compatible_labels == index
+            near_main = cv2.dilate(
+                np.where(main, 255, 0).astype(np.uint8), adjacency_kernel
+            ) > 0
+            adjacency = float(
+                np.count_nonzero(component & near_main)
+                / max(1, np.count_nonzero(component))
+            )
+            if adjacency < min(settings.body_region_min_boundary_ratio, 0.04):
+                paint_like_residual[component & strict_compatible] = 255
+                continue
+            component_mask = np.where(component, 255, 0).astype(np.uint8)
+            similarity, _, lightness = _relation(
+                lab, component_mask, profile_lab, settings.body_paint_chroma_threshold
+            )
+            add(PaintGroup.MAIN_BODY_PAINT, component_mask)
+            main |= component
+            regions.append(
+                RegionClassification(
+                    region_id=f"body_compatible_region_{index}",
+                    part_type="body_region",
+                    paint_group=PaintGroup.MAIN_BODY_PAINT,
+                    material_type=MaterialType.PAINTED_SURFACE,
+                    body_colour_similarity=round(similarity, 4),
+                    lightness_difference=round(lightness, 3),
+                    confidence=round(min(similarity, adjacency), 4),
+                    paintability=Paintability.EDITABLE,
+                    reason_codes=[
+                        "pixelwise_main_body_chroma_match",
+                        "adjacent_main_body_region",
+                    ],
+                )
+            )
+
+        remaining = unclassified & ~claimed
         component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
-            np.where(unclassified, 255, 0).astype(np.uint8)
+            np.where(remaining, 255, 0).astype(np.uint8)
         )
         minimum_secondary_area = max(100, round(car_pixels * 0.01))
-        adjacency_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         for index in range(1, component_count):
             component = labels == index
             component_mask = np.where(component, 255, 0).astype(np.uint8)
@@ -277,39 +575,19 @@ def analyse_paint_groups(
             similarity, chroma, lightness = _relation(
                 lab, component_mask, profile_lab, settings.body_paint_chroma_threshold
             )
-            near_main = cv2.dilate(
-                np.where(main, 255, 0).astype(np.uint8), adjacency_kernel
-            ) > 0
-            adjacency = float(
-                np.count_nonzero(component & near_main)
-                / max(1, np.count_nonzero(component))
-            )
             paint_like = material == MaterialType.PAINTED_SURFACE
-            matching = (
-                paint_like
-                and chroma <= settings.body_paint_chroma_threshold
-                and adjacency >= settings.body_region_min_boundary_ratio
-            )
             group = (
-                PaintGroup.MAIN_BODY_PAINT
-                if matching
-                else PaintGroup.SECONDARY_BODY_PAINT
+                PaintGroup.SECONDARY_BODY_PAINT
                 if paint_like
                 and chroma > settings.body_paint_chroma_threshold
                 and stats[index, cv2.CC_STAT_AREA] >= minimum_secondary_area
+                and not np.any(component & strict_compatible)
                 else PaintGroup.UNKNOWN
             )
-            if (
-                paint_like
-                and chroma <= settings.body_paint_chroma_threshold
-                and not matching
-            ):
-                paint_like_residual[component] = 255
+            if np.any(component & strict_compatible):
+                paint_like_residual[component & strict_compatible] = 255
             add(group, component_mask)
-            if matching:
-                main |= component
-                reasons += ["main_body_chroma_match", "adjacent_main_body_region"]
-            elif group == PaintGroup.SECONDARY_BODY_PAINT:
+            if group == PaintGroup.SECONDARY_BODY_PAINT:
                 reasons += ["contrasting_body_chroma"]
             regions.append(
                 RegionClassification(
@@ -322,18 +600,14 @@ def analyse_paint_groups(
                     confidence=round(
                         min(
                             confidence,
-                            similarity
-                            if matching
-                            else 1 - similarity
+                            1 - similarity
                             if group == PaintGroup.SECONDARY_BODY_PAINT
-                            else max(similarity, adjacency),
+                            else similarity,
                         ),
                         4,
                     ),
                     paintability=(
-                        Paintability.EDITABLE
-                        if group == PaintGroup.MAIN_BODY_PAINT
-                        else Paintability.SEPARATELY_EDITABLE
+                        Paintability.SEPARATELY_EDITABLE
                         if group == PaintGroup.SECONDARY_BODY_PAINT
                         else Paintability.UNCERTAIN
                     ),

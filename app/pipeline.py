@@ -33,7 +33,7 @@ from app.paint_analysis.diagnostics import (
 from app.paint_analysis.paint_group_classifier import analyse_paint_groups
 from app.paint_analysis.schemas import PaintGroup
 from app.quality.checks import check_paint_analysis
-from app.roboflow import segment_boxes
+from app.roboflow import segment_boxes, segment_concepts
 from app.schemas import (
     AssetBundle,
     AvailableModifications,
@@ -44,8 +44,8 @@ from app.schemas import (
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"15"
-PAINT_ANALYSIS_VERSION = "paint-groups-v4"
+PIPELINE_VERSION = b"21"
+PAINT_ANALYSIS_VERSION = "paint-groups-v10"
 
 PAINT_GROUP_FILENAMES = {
     PaintGroup.MAIN_BODY_PAINT: "main-body-paint-mask.png",
@@ -198,13 +198,36 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                         )
                     )
 
+            if settings.roboflow_segmenter == "hybrid":
+                semantic_groups = {
+                    "handles": "car door handle",
+                    "pillars": "car window pillar",
+                    "trim": "black car trim",
+                }
+                semantic_masks = segment_concepts(
+                    image_jpeg, list(semantic_groups.values()), settings
+                )
+                for group, mask_polygons in zip(
+                    semantic_groups, semantic_masks
+                ):
+                    if mask_polygons:
+                        masks_by_group[group].append(
+                            clean_mask(
+                                polygons_to_mask(mask_polygons, image.size),
+                                image.size,
+                                settings.mask_kernel_size,
+                                settings.mask_feather_radius,
+                            )
+                        )
+
             full_car = combine_masks(masks_by_group.pop("full_car"))
-            full_car = np.maximum(
-                full_car,
-                combine_masks(
-                    [mask for masks in masks_by_group.values() for mask in masks]
-                ),
-            )
+            if settings.roboflow_segmenter != "hybrid":
+                full_car = np.maximum(
+                    full_car,
+                    combine_masks(
+                        [mask for masks in masks_by_group.values() for mask in masks]
+                    ),
+                )
             part_masks = {}
             for group, masks in masks_by_group.items():
                 mask = np.minimum(combine_masks(masks), full_car)
@@ -380,7 +403,10 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                     "yolo_world": settings.yolo_model_id,
                     "car_parts": settings.car_parts_model_id,
                     "segmenter": (
-                        settings.roboflow_sam3_model_id
+                        f"sam2/{settings.roboflow_sam2_version_id}"
+                        f"+{settings.roboflow_sam3_model_id}"
+                        if settings.roboflow_segmenter == "hybrid"
+                        else settings.roboflow_sam3_model_id
                         if settings.roboflow_segmenter == "sam3"
                         else f"sam2/{settings.roboflow_sam2_version_id}"
                     ),

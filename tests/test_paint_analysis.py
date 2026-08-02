@@ -220,6 +220,21 @@ class PaintAnalysisTest(unittest.TestCase):
         self.assertTrue(protected)
         self.assertFalse(np.any((result.masks.editable > 0) & (trim > 0)))
 
+    def test_black_trim_prompt_does_not_protect_saturated_body_paint(self) -> None:
+        pixels = np.full((60, 100, 3), (180, 35, 30), np.uint8)
+        trim = rectangle((60, 100), (10, 40, 90, 55))
+        pixels[45:55, 10:90] = 20
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((60, 100), 255, np.uint8),
+            {"trim": trim},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.editable[42, 50], 255)
+        self.assertEqual(result.masks.protected[50, 50], 255)
+
     def test_part_aware_groups_and_bumper_subregions(self) -> None:
         pixels = np.full((100, 120, 3), (180, 35, 30), np.uint8)
         parts = {
@@ -322,6 +337,126 @@ class PaintAnalysisTest(unittest.TestCase):
             SETTINGS,
         )
         self.assertFalse(np.any((result.masks.editable > 0) & (handle > 0)))
+
+    def test_body_coloured_handles_and_mirror_caps_split_from_dark_bases(self) -> None:
+        pixels = np.full((80, 120, 3), (180, 35, 30), np.uint8)
+        handle = rectangle((80, 120), (20, 45, 44, 55))
+        mirror = rectangle((80, 120), (70, 30, 102, 50))
+        pixels[45:55, 40:44] = 15
+        pixels[30:50, 96:102] = 15
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((80, 120), 255, np.uint8),
+            {"handles": handle, "mirrors": mirror},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.editable[48, 25], 255)
+        self.assertEqual(result.masks.editable[40, 75], 255)
+        self.assertEqual(result.masks.protected[48, 42], 255)
+        self.assertEqual(result.masks.protected[40, 99], 255)
+
+        grey = np.full((80, 120, 3), (95, 100, 105), np.uint8)
+        grey[30:50, 96:102] = 15
+        result = analyse_paint_groups(
+            Image.fromarray(grey),
+            np.full((80, 120), 255, np.uint8),
+            {"mirrors": mirror},
+            SETTINGS,
+        )
+        self.assertEqual(result.masks.editable[40, 75], 255)
+        self.assertEqual(result.masks.protected[40, 99], 255)
+
+    def test_mixed_front_region_recovers_paint_without_crossing_light(self) -> None:
+        pixels = np.full((50, 80, 3), (180, 35, 30), np.uint8)
+        pixels[3] = (25, 60, 190)
+        light = rectangle((50, 80), (30, 0, 42, 5))
+        pixels[light > 0] = (245, 245, 220)
+        settings = SimpleNamespace(**vars(SETTINGS))
+        settings.body_completion_kernel_size = 1
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((50, 80), 255, np.uint8),
+            {"lights": light},
+            settings,
+        )
+
+        self.assertEqual(result.masks.editable[2, 20], 255)
+        self.assertEqual(result.masks.protected[2, 35], 255)
+        self.assertFalse(
+            np.any((result.masks.editable > 0) & (result.masks.protected > 0))
+        )
+
+    def test_body_paint_overspill_is_recovered_from_light_and_trim_edges(self) -> None:
+        pixels = np.full((70, 100, 3), (180, 35, 30), np.uint8)
+        light = rectangle((70, 100), (10, 10, 35, 30))
+        trim = rectangle((70, 100), (10, 45, 90, 60))
+        pixels[12:28, 12:33] = (240, 235, 210)
+        pixels[48:58, 12:88] = 20
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((70, 100), 255, np.uint8),
+            {"lights": light, "trim": trim},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.editable[10, 20], 255)
+        self.assertEqual(result.masks.protected[20, 20], 255)
+        self.assertEqual(result.masks.editable[45, 50], 255)
+        self.assertEqual(result.masks.protected[52, 50], 255)
+
+        red_lens = rectangle((70, 100), (55, 10, 85, 30))
+        result = analyse_paint_groups(
+            Image.fromarray(np.full((70, 100, 3), (180, 35, 30), np.uint8)),
+            np.full((70, 100), 255, np.uint8),
+            {"lights": red_lens},
+            SETTINGS,
+        )
+        self.assertFalse(np.any((result.masks.editable > 0) & (red_lens > 0)))
+
+    def test_dark_bumper_insert_does_not_follow_chromatic_body_colour(self) -> None:
+        pixels = np.full((60, 100, 3), (180, 35, 30), np.uint8)
+        bumper = rectangle((60, 100), (10, 25, 90, 55))
+        pixels[35:50, 20:40] = 25
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((60, 100), 255, np.uint8),
+            {"bumper": bumper},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.editable[30, 50], 255)
+        self.assertEqual(result.masks.protected[40, 30], 255)
+
+    def test_body_coloured_window_edge_is_released_but_glass_stays_protected(self) -> None:
+        pixels = np.full((60, 100, 3), (180, 35, 30), np.uint8)
+        window = rectangle((60, 100), (20, 10, 80, 35))
+        pixels[11:34, 21:79] = (20, 25, 30)
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((60, 100), 255, np.uint8),
+            {"windows": window},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.editable[10, 50], 255)
+        self.assertEqual(result.masks.protected[20, 50], 255)
+
+        pixels[:] = (95, 100, 105)
+        pixels[11:34, 21:79] = (20, 25, 30)
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((60, 100), 255, np.uint8),
+            {"windows": window},
+            SETTINGS,
+        )
+        self.assertEqual(result.masks.editable[10, 50], 255)
+        self.assertEqual(result.masks.protected[20, 50], 255)
 
     def test_masks_are_disjoint_and_request_specific(self) -> None:
         shape = (20, 20)

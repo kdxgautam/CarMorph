@@ -29,6 +29,7 @@ from app.detection import (
     _deduplicate,
     _part_group,
     _side_window_prompts,
+    _with_side_window_prompts,
     select_primary_car,
     validate_view,
 )
@@ -44,7 +45,7 @@ from app.image_ops import (
     polygons_to_mask,
     recolour,
 )
-from app.roboflow import segment_boxes
+from app.roboflow import segment_boxes, segment_concepts
 from app.pipeline import _asset_id, _clip_fallback_mask, _refine_side_windows
 from app.schemas import AssetBundle, BoundingBox
 
@@ -173,6 +174,23 @@ class PipelineTest(unittest.TestCase):
     def test_side_windows_require_a_door(self) -> None:
         with self.assertRaisesRegex(PipelineError, "doors"):
             _side_window_prompts([])
+
+    def test_partial_side_windows_still_prompt_every_door(self) -> None:
+        detected = PartDetection(
+            "windows", (18, 26, 48, 46), 0.9, ((18, 26), (48, 26), (48, 46))
+        )
+        doors = [
+            PartDetection("doors", (10, 20, 50, 100), 0.9),
+            PartDetection("doors", (60, 20, 100, 100), 0.8),
+        ]
+
+        completed = _with_side_window_prompts([detected], doors)
+
+        self.assertIs(completed[0], detected)
+        self.assertEqual(
+            [part.clip_box for part in completed[1:]],
+            [(10, 20, 50, 56), (60, 20, 100, 56)],
+        )
 
     def test_fallback_masks_are_clipped_to_their_prompt(self) -> None:
         mask = np.full((100, 100), 255, np.uint8)
@@ -327,6 +345,35 @@ class PipelineTest(unittest.TestCase):
             post.call_args.kwargs["json"]["prompts"],
             [{"type": "text", "text": "car"}],
         )
+
+    def test_sam3_semantic_prompts_allow_missing_optional_parts(self) -> None:
+        settings = SimpleNamespace(
+            roboflow_api_url="https://serverless.roboflow.com",
+            roboflow_api_key="test-key",
+            roboflow_sam3_model_id="sam3/sam3_final",
+            roboflow_timeout=180,
+        )
+        response = Mock(ok=True)
+        response.json.return_value = {
+            "prompt_results": [
+                {"predictions": []},
+                {
+                    "predictions": [
+                        {
+                            "format": "polygon",
+                            "masks": [[[1, 1], [3, 1], [3, 3]]],
+                        }
+                    ]
+                },
+            ]
+        }
+        with patch("app.roboflow.requests.post", return_value=response):
+            masks = segment_concepts(
+                b"image", ["car door handle", "car window pillar"], settings
+            )
+
+        self.assertEqual(masks[0], [])
+        self.assertEqual(masks[1], [[[1, 1], [3, 1], [3, 3]]])
 
     def test_surface_edit_schema_validation(self) -> None:
         request = SurfaceEditRequest(

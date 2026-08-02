@@ -137,6 +137,16 @@ def _side_window_prompts(doors: list[PartDetection]) -> list[PartDetection]:
     ]
 
 
+def _with_side_window_prompts(
+    parts: list[PartDetection], doors: list[PartDetection]
+) -> list[PartDetection]:
+    if doors:
+        return [*parts, *_side_window_prompts(doors)]
+    if not any(part.group == "windows" for part in parts):
+        _side_window_prompts(doors)
+    return parts
+
+
 def validate_view(view: ViewName, parts: list[PartDetection]) -> None:
     if (
         view in {"front", "rear"}
@@ -319,8 +329,6 @@ def detect_car_and_parts(
                 0,
             )
         )
-    if view in {"left", "right"} and not any(
-        part.group == "windows" for part in parts
-    ):
-        parts.extend(_side_window_prompts(doors))
+    if view in {"left", "right"}:
+        parts = _with_side_window_prompts(parts, doors)
     return car, parts

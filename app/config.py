@@ -189,7 +189,7 @@ class Settings:
                     "ROBOFLOW_API_URL", "https://serverless.roboflow.com"
                 ).rstrip("/"),
                 roboflow_api_key=os.environ["ROBOFLOW_API_KEY"],
-                roboflow_segmenter=os.getenv("ROBOFLOW_SEGMENTER", "sam3").lower(),
+                roboflow_segmenter=os.getenv("ROBOFLOW_SEGMENTER", "hybrid").lower(),
                 roboflow_sam2_version_id=os.getenv(
                     "ROBOFLOW_SAM2_VERSION_ID", "hiera_small"
                 ),
@@ -283,9 +283,11 @@ class Settings:
                 "CAR_PARTS_IMAGE_SIZE must be positive",
                 503,
             )
-        if settings.roboflow_segmenter not in {"sam2", "sam3"}:
+        if settings.roboflow_segmenter not in {"hybrid", "sam2", "sam3"}:
             raise PipelineError(
-                "configuration_error", "ROBOFLOW_SEGMENTER must be sam2 or sam3", 503
+                "configuration_error",
+                "ROBOFLOW_SEGMENTER must be hybrid, sam2, or sam3",
+                503,
             )
         if settings.mask_kernel_size < 1 or settings.mask_kernel_size % 2 == 0:
             raise PipelineError(
