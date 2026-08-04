@@ -14,3 +14,5 @@ weights/
 *.pt
 .env
 evaluation/
+
+ppp-wheel.json
