@@ -307,35 +307,76 @@ def recolour(
     if not np.any(core):
         raise PipelineError("missing_masks", "Paintable-body mask is empty", 500)
 
-    luminance = cv2.cvtColor(source, cv2.COLOR_RGB2GRAY).astype(np.float32)
-    median_luminance = float(np.median(luminance[core]))
-    strength = {"glossy": 0.4, "matte": 0.22, "metallic": 0.5}.get(finish, 0.4)
-    low, high = {
-        "glossy": (0.55, 1.25),
-        "matte": (0.7, 1.12),
-        "metallic": (0.5, 1.32),
-    }.get(finish, (0.55, 1.25))
-    detail = (
-        np.clip(
-            1 + (luminance / median_luminance - 1) * strength,
-            low,
-            high,
-        )
-        if median_luminance
-        else np.ones_like(luminance)
+    source_lab = cv2.cvtColor(
+        source.astype(np.float32) / 255, cv2.COLOR_RGB2LAB
     )
-    if finish == "metallic":
-        shimmer = ((np.indices(luminance.shape).sum(axis=0) % 7) - 3) * 0.012
-        detail = np.clip(detail + shimmer, low, high)
+    target_lab = cv2.cvtColor(
+        np.asarray(rgb, np.float32).reshape(1, 1, 3) / 255,
+        cv2.COLOR_RGB2LAB,
+    )[0, 0]
+    anchor = cv2.erode(
+        np.where(core, 255, 0).astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+    ) >= 128
+    if not np.any(anchor):
+        anchor = core
+    lightness = source_lab[:, :, 0]
+    low, lower_mid, _, upper_mid, high = np.percentile(
+        lightness[anchor], (5, 20, 50, 80, 98)
+    )
+    diffuse = anchor & (lightness >= lower_mid) & (lightness <= upper_mid)
+    if not np.any(diffuse):
+        diffuse = anchor
+    source_base = np.median(source_lab[:, :, 1:][diffuse], axis=0)
+    source_chroma = float(np.linalg.norm(source_base))
+    shadow = (
+        np.clip((lightness - low) / (lower_mid - low), 0, 1)
+        if lower_mid - low > 1
+        else np.ones_like(lightness)
+    )
+    highlight = (
+        np.clip((lightness - upper_mid) / (high - upper_mid), 0, 1)
+        if high - upper_mid > 1
+        else np.zeros_like(lightness)
+    )
+    reflection_gain, shadow_floor, highlight_rolloff = {
+        "glossy": (0.55, 0.75, 0.8),
+        "matte": (0.25, 0.82, 0.35),
+        "metallic": (0.65, 0.72, 0.65),
+    }.get(finish, (0.55, 0.75, 0.8))
+    source_ab = source_lab[:, :, 1:]
+    if source_chroma > 8:
+        source_direction = source_base / source_chroma
+        projection = np.sum(source_ab * source_direction, axis=2)
+        paint_strength = np.clip(projection / source_chroma, 0, 1.25)
+        reflection = source_ab - projection[:, :, None] * source_direction
+    else:
+        paint_strength = np.ones_like(lightness)
+        reflection = source_ab - source_base
+    paint_strength *= (shadow_floor + (1 - shadow_floor) * shadow) * (
+        1 - highlight_rolloff * highlight
+    )
+    result_lab = source_lab.copy()
+    result_lab[:, :, 1:] = (
+        target_lab[1:] * paint_strength[:, :, None]
+        + reflection * reflection_gain
+    )
     recoloured = np.rint(
         np.clip(
-            np.asarray(rgb, dtype=np.float32) * detail[:, :, None],
+            cv2.cvtColor(result_lab, cv2.COLOR_LAB2RGB),
             0,
-            255,
+            1,
         )
+        * 255
     ).astype(np.uint8)
 
-    alpha = body_mask.astype(np.float32)[:, :, None] / 255
+    coverage = body_mask.copy()
+    binary_coverage = np.where(core, 255, 0).astype(np.uint8)
+    softened = cv2.GaussianBlur(binary_coverage, (3, 3), 0)
+    coverage[core] = np.minimum(
+        coverage[core], np.maximum(softened[core], 128)
+    )
+    alpha = coverage.astype(np.float32)[:, :, None] / 255
     preview = np.rint(source * (1 - alpha) + recoloured * alpha).astype(np.uint8)
     output = BytesIO()
     Image.fromarray(preview).save(output, "PNG")

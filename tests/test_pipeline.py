@@ -86,19 +86,23 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(preview.getpixel((0, 0)), (90, 90, 90))
         self.assertNotEqual(preview.getpixel((50, 60)), (90, 90, 90))
 
+        sharp = np.zeros((100, 100), np.uint8)
+        sharp[20:80, 20:80] = 255
+        antialiased = Image.open(
+            BytesIO(recolour(image, sharp, "ff0000"))
+        ).convert("RGB")
+        self.assertEqual(antialiased.getpixel((19, 50)), (90, 90, 90))
+        self.assertNotEqual(
+            antialiased.getpixel((20, 50)), antialiased.getpixel((50, 50))
+        )
+
         solid = Image.new("RGB", (100, 100), (220, 220, 220))
         solid_blue = Image.open(
             BytesIO(recolour(solid, np.full((100, 100), 255, np.uint8), "2563eb"))
         ).convert("RGB")
-        self.assertLessEqual(
-            max(
-                abs(actual - expected)
-                for actual, expected in zip(
-                    solid_blue.getpixel((50, 50)), (37, 99, 235)
-                )
-            ),
-            3,
-        )
+        solid_blue_pixel = solid_blue.getpixel((50, 50))
+        self.assertGreater(solid_blue_pixel[2], solid_blue_pixel[0])
+        self.assertGreater(solid_blue_pixel[2], solid_blue_pixel[1])
 
         varied = np.full((100, 100, 3), 100, np.uint8)
         varied[:, 50:] = 240
@@ -113,12 +117,94 @@ class PipelineTest(unittest.TestCase):
         ).convert("RGB")
         dark_pixel = varied_blue.getpixel((25, 50))
         bright_pixel = varied_blue.getpixel((75, 50))
-        self.assertLess(bright_pixel[0], 60)
-        self.assertGreater(bright_pixel[2] - bright_pixel[0], 190)
+        self.assertGreater(bright_pixel[2], bright_pixel[0])
         self.assertNotEqual(dark_pixel, bright_pixel)
 
         with self.assertRaisesRegex(PipelineError, "dimensions"):
             recolour(image, np.zeros((50, 50), dtype=np.uint8), "ff0000")
+
+    def test_recolour_preserves_luminance_edges_and_neutral_glare(self) -> None:
+        lab = np.empty((80, 120, 3), np.float32)
+        lab[:, :, 0] = np.linspace(25, 80, 120)
+        lab[:, :, 1:] = (48, 30)
+        lab[:, 58:62, 0] -= 14
+        lab[20:35, 75:95] = (96, 0, 0)
+        source = np.rint(
+            np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2RGB), 0, 1) * 255
+        ).astype(np.uint8)
+        result = np.asarray(
+            Image.open(
+                BytesIO(
+                    recolour(
+                        Image.fromarray(source),
+                        np.full((80, 120), 255, np.uint8),
+                        "183a63",
+                    )
+                )
+            ).convert("RGB")
+        )
+        source_lab = cv2.cvtColor(source.astype(np.float32) / 255, cv2.COLOR_RGB2LAB)
+        result_lab = cv2.cvtColor(result.astype(np.float32) / 255, cv2.COLOR_RGB2LAB)
+        self.assertLess(float(np.mean(np.abs(source_lab[:, :, 0] - result_lab[:, :, 0]))), 1)
+        source_gradient = cv2.Sobel(source_lab[:, :, 0], cv2.CV_32F, 1, 0).ravel()
+        result_gradient = cv2.Sobel(result_lab[:, :, 0], cv2.CV_32F, 1, 0).ravel()
+        self.assertGreater(float(np.corrcoef(source_gradient, result_gradient)[0, 1]), 0.98)
+        highlight_chroma = np.linalg.norm(result_lab[20:35, 75:95, 1:], axis=2)
+        midtone_chroma = np.linalg.norm(result_lab[40:55, 35:50, 1:], axis=2)
+        target_lab = cv2.cvtColor(
+            np.asarray([[[24, 58, 99]]], np.float32) / 255,
+            cv2.COLOR_RGB2LAB,
+        )[0, 0]
+        self.assertLess(float(np.median(highlight_chroma)), float(np.median(midtone_chroma)))
+        self.assertLess(
+            float(
+                np.linalg.norm(
+                    np.median(result_lab[40:55, 35:50, 1:], axis=(0, 1))
+                    - target_lab[1:]
+                )
+            ),
+            3,
+        )
+
+    def test_recolour_preserves_reflection_residual_without_source_paint(self) -> None:
+        lab = np.empty((50, 80, 3), np.float32)
+        lab[:] = (50, 48, 30)
+        lab[15:35, 45:65, 1:] = (30, 5)
+        source = np.rint(
+            np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2RGB), 0, 1) * 255
+        ).astype(np.uint8)
+        result = np.asarray(
+            Image.open(
+                BytesIO(
+                    recolour(
+                        Image.fromarray(source),
+                        np.full((50, 80), 255, np.uint8),
+                        "183a63",
+                    )
+                )
+            ).convert("RGB")
+        )
+        result_lab = cv2.cvtColor(result.astype(np.float32) / 255, cv2.COLOR_RGB2LAB)
+        base = np.median(result_lab[5:15, 5:25, 1:], axis=(0, 1))
+        reflected = np.median(result_lab[18:32, 48:62, 1:], axis=(0, 1))
+        self.assertLess(float(base[1]), 0)
+        self.assertGreater(float(np.linalg.norm(reflected - base)), 3)
+
+    def test_metallic_recolour_does_not_invent_periodic_shimmer(self) -> None:
+        source = Image.new("RGB", (70, 70), (150, 40, 30))
+        result = np.asarray(
+            Image.open(
+                BytesIO(
+                    recolour(
+                        source,
+                        np.full((70, 70), 255, np.uint8),
+                        "183a63",
+                        "metallic",
+                    )
+                )
+            ).convert("RGB")
+        )
+        self.assertEqual(int(np.max(np.ptp(result[5:-5, 5:-5], axis=(0, 1)))), 0)
 
     def test_dark_trim_is_limited_to_lower_car(self) -> None:
         pixels = np.full((100, 100, 3), 220, np.uint8)
@@ -145,7 +231,7 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(_part_group("right_back-window"), "windows")
         self.assertEqual(_part_group("left_tail-light"), "lights")
         self.assertEqual(_part_group("right_mirror"), "mirrors")
-        self.assertIsNone(_part_group("windshield", "right"))
+        self.assertEqual(_part_group("windshield", "right"), "windows")
         self.assertEqual(_part_group("windshield", "front"), "windows")
 
     def test_side_windows_use_upper_deduplicated_doors(self) -> None:

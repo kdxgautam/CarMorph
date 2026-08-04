@@ -89,6 +89,14 @@ uvicorn app.main:app --reload
 
 The API is available at `http://127.0.0.1:8000`; OpenAPI is at `/docs`.
 
+## Start the Streamlit interface
+
+With the same virtual environment and `.env` loaded:
+
+```bash
+streamlit run streamlit_app.py
+```
+
 ## API routes
 
 | Method | Route | Purpose |

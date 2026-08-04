@@ -41,8 +41,6 @@ def _normalise(value: object) -> str:
 
 def _part_group(class_name: object, view: ViewName | None = None) -> str | None:
     name = _normalise(class_name)
-    if view in {"left", "right"} and name in {"windshield", "back_windshield"}:
-        return None
     return next(
         (
             group
