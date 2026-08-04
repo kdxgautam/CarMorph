@@ -1,3 +1,5 @@
+"""Image validation, mask operations, and deterministic LAB recolouring."""
+
 import math
 import warnings
 from dataclasses import dataclass
@@ -18,6 +20,8 @@ PAINTABILITY_RULES_VERSION = "paintability-1"
 
 @dataclass(frozen=True)
 class PaintabilityMasks:
+    """Legacy editable/protected/uncertain mask bundle."""
+
     editable: np.ndarray
     protected: np.ndarray
     uncertain: np.ndarray
@@ -25,6 +29,8 @@ class PaintabilityMasks:
 
 
 def load_image(data: bytes) -> tuple[Image.Image, str]:
+    """Decode one supported still image and enforce safe dimension limits."""
+
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -48,12 +54,16 @@ def load_image(data: bytes) -> tuple[Image.Image, str]:
 
 
 def encode_jpeg(image: Image.Image) -> bytes:
+    """Encode a normalized provider input without metadata."""
+
     output = BytesIO()
     image.save(output, "JPEG", quality=95, exif=b"", icc_profile=None)
     return output.getvalue()
 
 
 def save_base_assets(image: Image.Image, output: Path) -> None:
+    """Persist a lossless original and grayscale luminance reference."""
+
     image.save(
         output / "original.webp",
         "WEBP",
@@ -65,6 +75,8 @@ def save_base_assets(image: Image.Image, output: Path) -> None:
 
 
 def polygons_to_mask(polygons: list, size: tuple[int, int]) -> np.ndarray:
+    """Rasterize validated provider polygons into one binary image-sized mask."""
+
     mask = np.zeros((size[1], size[0]), dtype=np.uint8)
     if not polygons:
         raise PipelineError(
@@ -102,6 +114,8 @@ def clean_mask(
     kernel_size: int,
     feather_radius: int,
 ) -> np.ndarray:
+    """Normalize, denoise, close gaps, and optionally soften a semantic mask."""
+
     if mask.ndim != 2:
         raise PipelineError("invalid_sam_response", "Mask must be two-dimensional", 502)
 
@@ -132,6 +146,8 @@ def clean_mask(
 
 
 def combine_masks(masks: list[np.ndarray]) -> np.ndarray:
+    """Union same-sized masks while rejecting incomplete provider output."""
+
     if not masks:
         raise PipelineError("missing_masks", "No masks were supplied")
     shape = masks[0].shape
@@ -148,6 +164,8 @@ def build_body_mask(
     kernel_size: int,
     feather_radius: int,
 ) -> np.ndarray:
+    """Build the legacy body mask by subtracting non-paintable parts."""
+
     if any(mask.shape != full_car.shape for mask in non_paintable):
         raise PipelineError(
             "mask_dimension_mismatch",
@@ -180,6 +198,8 @@ def build_paintability_masks(
     kernel_size: int,
     feather_radius: int,
 ) -> PaintabilityMasks:
+    """Build disjoint legacy masks with protected and uncertain precedence."""
+
     if any(mask.shape != full_car.shape for mask in [*protected_parts, *uncertain_parts]):
         raise PipelineError(
             "mask_dimension_mismatch",
@@ -225,6 +245,8 @@ def build_paintability_masks(
 
 
 def save_mask(mask: np.ndarray, path: Path) -> None:
+    """Write one grayscale mask and fail if OpenCV cannot persist it."""
+
     if not cv2.imwrite(str(path), mask):
         raise OSError(f"Could not write mask: {path.name}")
 
@@ -236,6 +258,8 @@ def dark_trim_mask(
     kernel_size: int,
     feather_radius: int,
 ) -> np.ndarray:
+    """Find dark neutral pixels only in the lower portion of the detected car."""
+
     source = np.asarray(image.convert("RGB"))
     if full_car.shape != source.shape[:2]:
         raise PipelineError(
@@ -267,10 +291,14 @@ def uncertain_dark_region_mask(
     kernel_size: int,
     feather_radius: int,
 ) -> np.ndarray:
+    """Backward-compatible alias for lower-car dark-region detection."""
+
     return dark_trim_mask(image, full_car, car_box, kernel_size, feather_radius)
 
 
 def parse_colour(colour: str) -> tuple[str, tuple[int, int, int]]:
+    """Validate a six-digit hex colour and return normalized text plus RGB."""
+
     value = colour.removeprefix("#")
     if len(value) != 6 or any(
         character not in "0123456789abcdefABCDEF" for character in value
@@ -293,6 +321,13 @@ def recolour(
     colour: str,
     finish: str = "glossy",
 ) -> bytes:
+    """Transfer target paint chroma while preserving photographed luminance.
+
+    Percentile shading maps retain shadows and neutral glare. Source chroma
+    residuals carry reflections into the new paint, and the final alpha blend
+    is strictly inside the supplied editable mask.
+    """
+
     _, rgb = parse_colour(colour)
 
     source = np.asarray(image.convert("RGB"))
@@ -307,6 +342,8 @@ def recolour(
     if not np.any(core):
         raise PipelineError("missing_masks", "Paintable-body mask is empty", 500)
 
+    # LAB separates photographed luminance from paint chroma, so panel seams and
+    # lighting survive instead of being flattened by an RGB multiplier.
     source_lab = cv2.cvtColor(
         source.astype(np.float32) / 255, cv2.COLOR_RGB2LAB
     )
@@ -348,6 +385,8 @@ def recolour(
     if source_chroma > 8:
         source_direction = source_base / source_chroma
         projection = np.sum(source_ab * source_direction, axis=2)
+        # A floor prevents desaturated shadow reflections from retaining the old
+        # paint colour while highlights still roll off below.
         paint_strength = np.clip(projection / source_chroma, 0.65, 1.25)
         reflection = source_ab - projection[:, :, None] * source_direction
     else:
@@ -370,6 +409,8 @@ def recolour(
         * 255
     ).astype(np.uint8)
 
+    # Feather only pixels already inside the editable mask; protected/background
+    # pixels are never used as blend destinations.
     coverage = body_mask.copy()
     binary_coverage = np.where(core, 255, 0).astype(np.uint8)
     softened = cv2.GaussianBlur(binary_coverage, (3, 3), 0)

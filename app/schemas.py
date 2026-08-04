@@ -1,3 +1,5 @@
+"""Public asset metadata and API-facing view types."""
+
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -9,6 +11,8 @@ ViewSelection = Literal["auto", "front", "left", "right", "rear"]
 
 
 class BoundingBox(BaseModel):
+    """Primary-car rectangle and detector confidence in image coordinates."""
+
     x1: int
     y1: int
     x2: int
@@ -17,6 +21,8 @@ class BoundingBox(BaseModel):
 
 
 class PaintabilityReport(BaseModel):
+    """Compact coverage ratios and warnings exposed in asset metadata."""
+
     editable_ratio: float = 0
     protected_ratio: float = 0
     uncertain_ratio: float = 0
@@ -25,6 +31,8 @@ class PaintabilityReport(BaseModel):
 
 
 class AvailableModifications(BaseModel):
+    """Capability flags advertised for the prepared asset."""
+
     body_colour: bool = True
     finish: bool = True
     racing_stripes: bool = True
@@ -35,6 +43,8 @@ class AvailableModifications(BaseModel):
 
 
 class AssetBundle(BaseModel):
+    """Persisted contract describing a prepared car and all reusable assets."""
+
     asset_id: str
     view: ViewName
     requested_view: ViewSelection | None = None

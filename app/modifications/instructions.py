@@ -1,3 +1,5 @@
+"""Restricted natural-language parsing for supported surface edits."""
+
 import re
 from typing import Protocol
 
@@ -31,11 +33,17 @@ PHYSICAL_WORDS = re.compile(
 
 
 class InstructionParser(Protocol):
+    """Protocol for converting constrained text into a structured edit."""
+
     def parse(self, instruction: str) -> SurfaceEditRequest:
+        """Parse one supported natural-language instruction."""
+
         ...
 
 
 def _colour(text: str, after: str = "") -> str | None:
+    """Find a hex or supported named colour, optionally after a keyword."""
+
     segment = text[text.find(after) + len(after) :] if after and after in text else text
     match = re.search(r"#?[0-9a-fA-F]{6}", segment)
     if match:
@@ -47,7 +55,11 @@ def _colour(text: str, after: str = "") -> str | None:
 
 
 class RestrictedInstructionParser:
+    """Deterministic parser for the intentionally small supported grammar."""
+
     def parse(self, instruction: str) -> SurfaceEditRequest:
+        """Parse paint/stripe language and reject physical modifications."""
+
         text = instruction.strip().lower()
         if not text:
             raise PipelineError("unsupported_instruction", "Instruction is empty")
@@ -106,6 +118,8 @@ class RestrictedInstructionParser:
 
 
 def merge_instruction(modification: SurfaceEditRequest) -> SurfaceEditRequest:
+    """Fill unspecified structured fields from the restricted text parser."""
+
     if not modification.custom_instruction:
         return modification
     parsed = RestrictedInstructionParser().parse(modification.custom_instruction)

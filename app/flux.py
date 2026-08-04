@@ -1,3 +1,5 @@
+"""Optional FLUX image editing and mask-safe result compositing."""
+
 import colorsys
 import hashlib
 import os
@@ -23,6 +25,8 @@ _FLUX_LOCK = Lock()
 
 
 def _colour_name(rgb: tuple[int, int, int]) -> str:
+    """Convert an RGB target to a coarse natural-language paint name."""
+
     hue, saturation, value = colorsys.rgb_to_hsv(*(channel / 255 for channel in rgb))
     if saturation < 0.12:
         return "white" if value > 0.85 else "black" if value < 0.18 else "grey"
@@ -45,6 +49,8 @@ def _colour_name(rgb: tuple[int, int, int]) -> str:
 
 @dataclass(frozen=True)
 class FluxSettings:
+    """Validated connection and deterministic inference settings for FLUX."""
+
     token: str
     space: str
     guidance_scale: float
@@ -54,6 +60,8 @@ class FluxSettings:
 
     @classmethod
     def from_env(cls) -> "FluxSettings":
+        """Load FLUX credentials/settings and reject unsupported ranges."""
+
         token = os.getenv("HF_TOKEN")
         if not token:
             raise PipelineError(
@@ -111,6 +119,8 @@ def composite_plain_colour(
     mask: Image.Image,
     target_rgb: tuple[int, int, int],
 ) -> Image.Image:
+    """Colour-correct generated paint, preserve luminance, and mask-composite it."""
+
     original = original.convert("RGB")
     mask = mask.convert("L")
     if mask.size != original.size:
@@ -142,6 +152,8 @@ def composite_design(
     generated: Image.Image,
     mask: Image.Image,
 ) -> Image.Image:
+    """Composite a generated surface design while restoring source luminance."""
+
     original = original.convert("RGB")
     mask = mask.convert("L")
     if mask.size != original.size:
@@ -166,6 +178,8 @@ def composite_design(
 
 
 class HuggingFaceFluxKontextProvider:
+    """Small adapter around the public Hugging Face FLUX Kontext Space."""
+
     name = "huggingface_flux_kontext"
 
     def edit(
@@ -175,6 +189,8 @@ class HuggingFaceFluxKontextProvider:
         prompt: str,
         settings: FluxSettings,
     ) -> Image.Image:
+        """Submit a deterministic edit and validate the downloaded image."""
+
         try:
             with tempfile.TemporaryDirectory() as temporary:
                 client = Client(
@@ -225,6 +241,12 @@ def render_flux(
     colour: str,
     settings: FluxSettings,
 ) -> tuple[Path, bool]:
+    """Render and cache the legacy single-colour FLUX endpoint.
+
+    The generated image is never returned directly: original luminance and all
+    pixels outside the stored body mask are restored before an atomic write.
+    """
+
     colour, rgb = parse_colour(colour)
     cache_key = hashlib.sha256(
         (

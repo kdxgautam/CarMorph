@@ -1,3 +1,5 @@
+"""FastAPI routes for asset preparation and constrained customisation."""
+
 import os
 import re
 from io import BytesIO
@@ -27,6 +29,8 @@ ASSET_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 @app.exception_handler(PipelineError)
 def pipeline_error_handler(_: Request, exc: PipelineError) -> JSONResponse:
+    """Expose expected pipeline failures through the stable error envelope."""
+
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": exc.code, "detail": exc.detail}},
@@ -35,6 +39,8 @@ def pipeline_error_handler(_: Request, exc: PipelineError) -> JSONResponse:
 
 @app.exception_handler(RequestValidationError)
 def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """Normalize FastAPI/Pydantic request errors for API clients."""
+
     return JSONResponse(
         status_code=422,
         content={"error": {"code": "invalid_request", "detail": str(exc)}},
@@ -42,6 +48,9 @@ def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONRes
 
 
 def _asset(asset_id: str) -> tuple[Path, AssetBundle]:
+    """Resolve and validate one stored asset without allowing path traversal."""
+
+    # Validate before joining the user-controlled identifier to storage paths.
     if not ASSET_ID_PATTERN.fullmatch(asset_id):
         raise PipelineError("asset_not_found", "Asset was not found", 404)
     directory = Path(os.getenv("STORAGE_ROOT", "data/processed")).resolve() / asset_id
@@ -63,6 +72,8 @@ def upload_car(
     image: Annotated[UploadFile, File()],
     view: Annotated[ViewSelection, Form()] = "front",
 ) -> AssetBundle:
+    """Validate an upload and prepare reusable masks for the requested view."""
+
     data = image.file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
         raise PipelineError(
@@ -75,11 +86,15 @@ def upload_car(
 
 @app.get("/cars/{asset_id}", response_model=AssetBundle)
 def get_car(asset_id: str) -> AssetBundle:
+    """Return persisted metadata for one prepared asset."""
+
     return _asset(asset_id)[1]
 
 
 @app.get("/cars/{asset_id}/assets/{asset_path:path}")
 def get_asset(asset_id: str, asset_path: str) -> FileResponse:
+    """Serve one explicitly listed file contained by an asset directory."""
+
     directory, metadata = _asset(asset_id)
     allowed = {
         metadata.source_image,
@@ -100,6 +115,8 @@ def preview(
     asset_id: str,
     colour: Annotated[str, Query(description="Six-digit RGB hex colour")] = "e63946",
 ) -> StreamingResponse:
+    """Return the backward-compatible deterministic body-colour preview."""
+
     directory, metadata = _asset(asset_id)
     body_path = metadata.masks.get("paintable_body")
     if not body_path:
@@ -124,6 +141,8 @@ def render(
     asset_id: str,
     colour: Annotated[str, Query(description="Six-digit RGB hex colour")] = "e63946",
 ) -> FileResponse:
+    """Return the backward-compatible cached FLUX colour render."""
+
     directory, metadata = _asset(asset_id)
     path, cached = render_flux(directory, metadata, colour, FluxSettings.from_env())
     return FileResponse(
@@ -138,6 +157,8 @@ def render(
 
 @app.post("/cars/{asset_id}/customise")
 async def customise(asset_id: str, request: Request) -> FileResponse:
+    """Validate a structured edit, select a renderer, and return its PNG."""
+
     directory, metadata = _asset(asset_id)
     try:
         body = await request.json()

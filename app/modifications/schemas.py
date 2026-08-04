@@ -1,3 +1,5 @@
+"""Validated public models for paint and design modifications."""
+
 import json
 import re
 from enum import StrEnum
@@ -12,18 +14,24 @@ MAX_CUSTOM_INSTRUCTION_LENGTH = 240
 
 
 class PaintFinish(StrEnum):
+    """Supported deterministic/generative surface finish descriptions."""
+
     GLOSSY = "glossy"
     MATTE = "matte"
     METALLIC = "metallic"
 
 
 class RendererMode(StrEnum):
+    """Caller preference for deterministic or generative execution."""
+
     AUTO = "auto"
     DETERMINISTIC = "deterministic"
     GENERATIVE = "generative"
 
 
 class StripePlacement(StrEnum):
+    """Supported visible surfaces for racing stripes."""
+
     BONNET = "bonnet"
     VISIBLE_ROOF = "visible_roof"
     BONNET_AND_VISIBLE_ROOF = "bonnet_and_visible_roof"
@@ -31,23 +39,31 @@ class StripePlacement(StrEnum):
 
 
 class StripeAlignment(StrEnum):
+    """Supported stripe alignment relative to visible body geometry."""
+
     CENTRE = "centre"
     LOWER_SIDE = "lower_side"
 
 
 class StripeWidth(StrEnum):
+    """Provider-independent qualitative stripe widths."""
+
     THIN = "thin"
     MEDIUM = "medium"
     THICK = "thick"
 
 
 def normalise_hex(value: str) -> str:
+    """Validate and canonicalize a six-digit RGB hex colour."""
+
     if not HEX_RE.fullmatch(value):
         raise ValueError("Colour must be a six-digit RGB hex colour")
     return "#" + value.removeprefix("#").lower()
 
 
 class RacingStripeElement(BaseModel):
+    """Strict structured request for one or two racing stripes."""
+
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["racing_stripes"] = "racing_stripes"
@@ -60,6 +76,8 @@ class RacingStripeElement(BaseModel):
     @field_validator("colour")
     @classmethod
     def validate_colour(cls, value: str) -> str:
+        """Canonicalize stripe colour during model validation."""
+
         return normalise_hex(value)
 
 
@@ -67,6 +85,8 @@ DesignElement = Annotated[RacingStripeElement, Field(discriminator="type")]
 
 
 class SurfaceEditRequest(BaseModel):
+    """Validated paint-only edit accepted by renderer planning."""
+
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["surface_edit"] = "surface_edit"
@@ -80,16 +100,22 @@ class SurfaceEditRequest(BaseModel):
     @field_validator("body_colour")
     @classmethod
     def validate_body_colour(cls, value: str | None) -> str | None:
+        """Canonicalize an optional body colour."""
+
         return normalise_hex(value) if value is not None else None
 
     @field_validator("roof_colour")
     @classmethod
     def validate_roof_colour(cls, value: str | None) -> str | None:
+        """Canonicalize an optional independently targeted roof colour."""
+
         return normalise_hex(value) if value is not None else None
 
     @field_validator("custom_instruction")
     @classmethod
     def validate_custom_instruction(cls, value: str | None) -> str | None:
+        """Normalize bounded instruction text and collapse blank input."""
+
         if value is None:
             return None
         value = value.strip()
@@ -101,6 +127,8 @@ class SurfaceEditRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_request(self) -> "SurfaceEditRequest":
+        """Reject empty edits and conflicting duplicate stripe definitions."""
+
         if (
             not self.body_colour
             and not self.roof_colour
@@ -120,6 +148,8 @@ class SurfaceEditRequest(BaseModel):
 
 
 class PartReplacementRequest(BaseModel):
+    """Reserved request shape rejected until physical replacement is supported."""
+
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["part_replacement"] = "part_replacement"
@@ -128,6 +158,8 @@ class PartReplacementRequest(BaseModel):
 
 
 def parse_modification(data: object) -> SurfaceEditRequest:
+    """Validate an untrusted JSON value and expose stable domain errors."""
+
     if not isinstance(data, dict):
         raise PipelineError("invalid_modification", "Request body must be an object")
     if data.get("type") == "part_replacement":
@@ -142,6 +174,8 @@ def parse_modification(data: object) -> SurfaceEditRequest:
 
 
 def normalised_request_json(modification: SurfaceEditRequest) -> str:
+    """Serialize a request canonically for cache identity and audit files."""
+
     return json.dumps(
         modification.model_dump(mode="json", exclude_none=True),
         sort_keys=True,

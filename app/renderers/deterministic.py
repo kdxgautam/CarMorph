@@ -1,3 +1,5 @@
+"""Render reproducible mask-bound paint edits without a generative model."""
+
 import json
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +18,8 @@ from app.schemas import AssetBundle
 
 
 class DeterministicSurfaceRenderer:
+    """Mask-bound LAB renderer for reproducible paint-only requests."""
+
     name = "deterministic"
 
     def render(
@@ -25,6 +29,8 @@ class DeterministicSurfaceRenderer:
         metadata: AssetBundle,
         modification: SurfaceEditRequest,
     ) -> RenderResult:
+        """Render body/roof colours, verify invariants, and atomically cache PNG."""
+
         if not modification.body_colour and not modification.roof_colour:
             raise PipelineError("invalid_modification", "A paint colour is required")
         if modification.design_elements:
@@ -90,6 +96,8 @@ class DeterministicSurfaceRenderer:
             body_mask if modification.body_colour else np.zeros_like(body_mask),
             roof_mask,
         )
+        # Accept the render only when changes remain inside the requested mask and
+        # every protected pixel remains exact.
         quality = check_render(
             original=original,
             result=result,

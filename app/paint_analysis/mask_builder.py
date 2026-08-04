@@ -1,3 +1,5 @@
+"""Convert classified paint groups into disjoint request-specific masks."""
+
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +41,8 @@ PROTECTED_GROUPS = {
 
 @dataclass(frozen=True)
 class PaintAnalysisMasks:
+    """Final disjoint masks consumed by renderers and quality checks."""
+
     editable: np.ndarray
     protected: np.ndarray
     uncertain: np.ndarray
@@ -47,6 +51,8 @@ class PaintAnalysisMasks:
 def union_group_masks(
     group_masks: dict[PaintGroup, np.ndarray], groups: set[PaintGroup], shape: tuple[int, int]
 ) -> np.ndarray:
+    """Union selected paint groups into a boolean mask of the requested shape."""
+
     selected = [mask >= 128 for group, mask in group_masks.items() if group in groups]
     return np.maximum.reduce(selected) if selected else np.zeros(shape, dtype=bool)
 
@@ -54,9 +60,12 @@ def union_group_masks(
 def build_default_masks(
     full_car: np.ndarray, group_masks: dict[PaintGroup, np.ndarray]
 ) -> PaintAnalysisMasks:
+    """Apply fixed precedence to produce default body-edit masks."""
+
     editable = union_group_masks(group_masks, DEFAULT_BODY_GROUPS, full_car.shape)
     protected = union_group_masks(group_masks, PROTECTED_GROUPS, full_car.shape)
     uncertain = union_group_masks(group_masks, {PaintGroup.UNKNOWN}, full_car.shape)
+    # Precedence is deliberate: protected > uncertain > editable.
     protected &= full_car >= 128
     uncertain &= (full_car >= 128) & ~protected
     editable &= ~protected & ~uncertain
@@ -73,6 +82,8 @@ def build_request_masks(
     *,
     include_roof: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Select body and optional contrast-roof masks for one render request."""
+
     if not group_masks:
         return fallback, np.zeros_like(fallback)
     body = union_group_masks(group_masks, DEFAULT_BODY_GROUPS, fallback.shape)
@@ -90,6 +101,8 @@ def build_request_masks(
 def load_request_masks(
     directory: Path, metadata: AssetBundle, *, include_roof: bool = False
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Load persisted paint groups with a legacy editable-mask fallback."""
+
     fallback_path = metadata.masks.get("editable_mask") or metadata.masks.get(
         "paintable_body"
     )

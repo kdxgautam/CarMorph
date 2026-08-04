@@ -1,9 +1,13 @@
+"""Paint-analysis enums, reports, and persisted metadata models."""
+
 from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
 
 class PaintGroup(StrEnum):
+    """Mutually exclusive visual surface groups persisted as masks."""
+
     MAIN_BODY_PAINT = "main_body_paint"
     SECONDARY_BODY_PAINT = "secondary_body_paint"
     CONTRAST_ROOF_PAINT = "contrast_roof_paint"
@@ -30,6 +34,8 @@ class PaintGroup(StrEnum):
 
 
 class MaterialType(StrEnum):
+    """Appearance/material evidence used before assigning paintability."""
+
     PAINTED_SURFACE = "painted_surface"
     MATTE_PLASTIC = "matte_plastic"
     GLOSSY_PLASTIC = "glossy_plastic"
@@ -42,6 +48,8 @@ class MaterialType(StrEnum):
 
 
 class Paintability(StrEnum):
+    """Whether a classified region may participate in the current request."""
+
     EDITABLE = "editable"
     SEPARATELY_EDITABLE = "separately_editable"
     PROTECTED = "protected"
@@ -49,6 +57,8 @@ class Paintability(StrEnum):
 
 
 class BodyPaintProfile(BaseModel):
+    """Robust colour and lighting statistics for the dominant factory paint."""
+
     dominant_lab: list[float] = Field(default_factory=list)
     median_lab: list[float] = Field(default_factory=list)
     lab_variance: list[float] = Field(default_factory=list)
@@ -63,6 +73,8 @@ class BodyPaintProfile(BaseModel):
 
 
 class RegionClassification(BaseModel):
+    """Auditable decision for one semantic part or connected body region."""
+
     region_id: str
     part_type: str
     paint_group: PaintGroup
@@ -76,6 +88,8 @@ class RegionClassification(BaseModel):
 
 
 class PaintGroupSummary(BaseModel):
+    """Pixel coverage and aggregate confidence for one non-empty group."""
+
     paint_group: PaintGroup
     pixel_count: int
     ratio_of_car: float
@@ -83,6 +97,8 @@ class PaintGroupSummary(BaseModel):
 
 
 class SurfaceRegionDecision(BaseModel):
+    """Signals and outcome from voting on one residual connected region."""
+
     region_id: str
     pixel_count: int
     seed_coverage: float
@@ -98,6 +114,8 @@ class SurfaceRegionDecision(BaseModel):
 
 
 class FragmentationMetrics(BaseModel):
+    """Before/after completeness metrics for seeded surface growth."""
+
     seed_pixel_count: int = 0
     final_pixel_count: int = 0
     recovered_pixel_count: int = 0
@@ -111,11 +129,15 @@ class FragmentationMetrics(BaseModel):
 
 
 class SurfaceCompletionReport(BaseModel):
+    """Persisted region decisions and fragmentation measurements."""
+
     regions: list[SurfaceRegionDecision] = Field(default_factory=list)
     fragmentation: FragmentationMetrics = Field(default_factory=FragmentationMetrics)
 
 
 class PaintGroupReport(BaseModel):
+    """Complete paint-analysis report stored with each prepared asset."""
+
     body_paint_profile: BodyPaintProfile = Field(default_factory=BodyPaintProfile)
     groups: list[PaintGroupSummary] = Field(default_factory=list)
     region_classifications: list[RegionClassification] = Field(default_factory=list)

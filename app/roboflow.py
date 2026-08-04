@@ -1,3 +1,5 @@
+"""Minimal validated client for Roboflow SAM2 and SAM3 segmentation."""
+
 import base64
 
 import requests
@@ -7,6 +9,9 @@ from app.errors import PipelineError
 
 
 def _json_response(response: requests.Response, error_code: str) -> dict:
+    """Validate an HTTP response and return its object-shaped JSON payload."""
+
+    # Normalize provider failures into stable pipeline error codes for both APIs.
     if not response.ok:
         raise PipelineError(
             error_code,
@@ -25,6 +30,8 @@ def _json_response(response: requests.Response, error_code: str) -> dict:
 def _post(
     payload: dict, endpoint: str, label: str, settings: Settings
 ) -> dict:
+    """POST one inference request with stable timeout and connection errors."""
+
     try:
         response = requests.post(
             f"{settings.roboflow_api_url}{endpoint}",
@@ -50,6 +57,12 @@ def _post(
 
 
 def _sam3_masks(data: dict, count: int, *, require_first: bool) -> list[list]:
+    """Extract usable SAM3 polygons in prompt order.
+
+    Optional concepts may be empty, but the primary car prompt must return at
+    least one polygon when ``require_first`` is true.
+    """
+
     results = data.get("prompt_results")
     if not isinstance(results, list) or len(results) != count:
         raise PipelineError(
@@ -82,6 +95,8 @@ def segment_boxes(
     settings: Settings,
     concepts: list[str] | None = None,
 ) -> list[list]:
+    """Segment detector boxes with SAM2, or concepts in SAM3-only mode."""
+
     segmenter = getattr(settings, "roboflow_segmenter", "sam2")
     if segmenter == "sam3":
         if concepts is None or len(concepts) != len(boxes):
@@ -156,6 +171,8 @@ def segment_boxes(
 def segment_concepts(
     image_jpeg: bytes, concepts: list[str], settings: Settings
 ) -> list[list]:
+    """Run zero-shot SAM3 segmentation for optional semantic concepts."""
+
     payload = {
         "image": {
             "type": "base64",

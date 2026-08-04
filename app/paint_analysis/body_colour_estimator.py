@@ -1,3 +1,5 @@
+"""Estimate the dominant body-paint profile from conservative panel anchors."""
+
 import cv2
 import numpy as np
 from PIL import Image
@@ -20,6 +22,13 @@ def estimate_body_paint(
     min_samples: int,
     chroma_threshold: float,
 ) -> tuple[BodyPaintProfile, np.ndarray]:
+    """Estimate dominant paint from eroded, non-extreme body-panel pixels.
+
+    Up to three deterministic chroma clusters separate the dominant paint from
+    large reflections or secondary colours. The function returns both the
+    JSON-safe profile and the exact anchor pixels supporting it.
+    """
+
     source = np.asarray(image.convert("RGB"))
     candidate = np.where(body_candidates >= 128, 255, 0).astype(np.uint8)
     if erosion_pixels:
@@ -34,6 +43,8 @@ def estimate_body_paint(
         warning = "no_reliable_body_paint_anchor"
         return BodyPaintProfile(warnings=[warning]), np.zeros_like(candidate)
 
+    # Extreme luminance values are usually glare or unsupported shadow, so they
+    # do not define the initial paint profile.
     low, high = np.percentile(values, (10, 90))
     anchors = (candidate > 0) & (lightness >= low) & (lightness <= high)
     samples = lab[anchors]

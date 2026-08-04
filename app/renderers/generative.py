@@ -1,3 +1,5 @@
+"""Render constrained generative edits and restore all protected pixels."""
+
 import json
 from pathlib import Path
 from typing import Protocol
@@ -23,13 +25,21 @@ from app.schemas import AssetBundle
 
 
 class ImageEditProvider(Protocol):
+    """Minimal interface required from an external image-edit provider."""
+
     name: str
 
     def edit(self, *, image_path: Path, prompt: str, settings: FluxSettings) -> Image.Image:
+        """Return one generated RGB edit for the supplied source and prompt."""
+
         ...
 
 
 class GenerativeSurfaceRenderer:
+    """Constrained provider renderer with mask restoration and quality checks."""
+
+    # Provider output is never trusted as the final composite; masks below restore
+    # protected and background pixels from the original image.
     name = "generative"
 
     def __init__(
@@ -37,6 +47,8 @@ class GenerativeSurfaceRenderer:
         settings: FluxSettings | None = None,
         provider: ImageEditProvider | None = None,
     ) -> None:
+        """Accept injectable settings/provider for deterministic tests."""
+
         self.settings = settings or FluxSettings.from_env()
         self.provider = provider or HuggingFaceFluxKontextProvider()
 
@@ -47,6 +59,8 @@ class GenerativeSurfaceRenderer:
         metadata: AssetBundle,
         modification: SurfaceEditRequest,
     ) -> RenderResult:
+        """Generate, mask-composite, verify, and cache a structured surface edit."""
+
         key = request_hash(
             modification,
             renderer=self.name,
@@ -144,6 +158,8 @@ class GenerativeSurfaceRenderer:
         return RenderResult(output, False, self.name, quality.status.value, quality.warnings)
 
     def _edit_with_one_retry(self, image_path: Path, prompt: str) -> Image.Image:
+        """Retry one transient provider-unavailable failure, but no other errors."""
+
         last_error: PipelineError | None = None
         for _ in range(2):
             try:

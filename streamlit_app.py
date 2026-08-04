@@ -1,3 +1,5 @@
+"""Interactive single-image editor and evaluation-result gallery."""
+
 import json
 from pathlib import Path
 
@@ -15,6 +17,8 @@ st.set_page_config(page_title="Car Paint Studio", page_icon="🚗", layout="wide
 st.title("Car Paint Studio")
 st.caption("Natural, mask-protected car paint previews.")
 
+# Keep expensive processing behind form submission; ordinary widget changes only
+# update controls and preserve the uploaded image.
 single_tab, evaluation_tab = st.tabs(("Customise one image", "Evaluation gallery"))
 with single_tab:
     uploaded = st.file_uploader("Car photo", type=("jpg", "jpeg", "png", "webp"))

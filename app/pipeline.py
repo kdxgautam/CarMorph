@@ -1,3 +1,5 @@
+"""Orchestrate detection, segmentation, paint analysis, and asset persistence."""
+
 import hashlib
 import shutil
 import tempfile
@@ -44,6 +46,8 @@ from app.schemas import (
     ViewSelection,
 )
 
+# Asset identity includes the requested view and processing version, so automatic
+# and manual rollback modes never reuse incompatible masks.
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
 PIPELINE_VERSION = b"33"
@@ -67,6 +71,8 @@ PAINT_GROUP_FILENAMES = {
 
 
 def _asset_id(source: bytes, view: ViewSelection) -> str:
+    """Hash source bytes, requested view, and pipeline version into cache ID."""
+
     return hashlib.sha256(
         PIPELINE_VERSION + b"\0" + view.encode() + b"\0" + source
     ).hexdigest()
@@ -75,6 +81,8 @@ def _asset_id(source: bytes, view: ViewSelection) -> str:
 def _clip_fallback_mask(
     mask: np.ndarray, part: PartDetection | None
 ) -> np.ndarray:
+    """Confine a generated mask to its part clip and recover a missing seed box."""
+
     if part is None or part.clip_box is None:
         return mask
     x1, y1, x2, y2 = map(round, part.clip_box)
@@ -94,6 +102,8 @@ def _refine_side_windows(
     windows: np.ndarray,
     mirrors: np.ndarray | None,
 ) -> np.ndarray:
+    """Binarize combined glass and remove mirror overlap from window masks."""
+
     windows = np.where(windows >= 128, 255, 0).astype(np.uint8)
     if mirrors is not None:
         windows[mirrors >= 128] = 0
@@ -101,6 +111,8 @@ def _refine_side_windows(
 
 
 def _hybrid_semantic_groups(view: ViewName) -> dict[str, str]:
+    """Return SAM3 concepts that supplement SAM2 for the resolved view."""
+
     groups = {
         "handles": "car door handle",
         "lights": "car light",
@@ -114,6 +126,8 @@ def _hybrid_semantic_groups(view: ViewName) -> dict[str, str]:
 
 
 def _read_result(metadata: Path) -> AssetBundle:
+    """Validate cached metadata and every file required for rendering."""
+
     try:
         result = AssetBundle.model_validate_json(metadata.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -134,10 +148,19 @@ def _read_result(metadata: Path) -> AssetBundle:
 def process_view(
     source: bytes, settings: Settings, view: ViewSelection
 ) -> AssetBundle:
+    """Prepare and persist one immutable, reusable car asset.
+
+    Processing detects the car and parts, refines masks through the configured
+    segmenters, classifies paint/material groups, checks mask invariants, and
+    atomically promotes a temporary directory into the content-addressed cache.
+    Existing complete assets return without rerunning models.
+    """
+
     asset_id = _asset_id(source, view)
     final = settings.storage_root / asset_id
 
     with _PROCESS_LOCK:
+        # A complete metadata file is the commit marker for an immutable asset.
         if (final / "metadata.json").is_file():
             return _read_result(final / "metadata.json")
 
@@ -190,6 +213,7 @@ def process_view(
                     )
                     prompt_parts.append(part)
 
+            # SAM2 supplies stable geometry from local detector boxes.
             polygons = segment_boxes(image_jpeg, prompts, settings, concepts)
             masks_by_group: dict[str, list[np.ndarray]] = defaultdict(list)
             for part, mask_polygons in zip(prompt_parts, polygons):
@@ -217,6 +241,8 @@ def process_view(
                         )
                     )
 
+            # SAM3 supplements optional semantic details without replacing SAM2's
+            # full-car and window boundaries.
             if settings.roboflow_segmenter == "hybrid":
                 semantic_groups = _hybrid_semantic_groups(resolved_view)
                 semantic_masks = segment_concepts(
@@ -278,6 +304,8 @@ def process_view(
             for group in absent_output_masks:
                 part_masks[group] = np.zeros_like(full_car)
 
+            # Material-aware analysis turns raw parts into the disjoint masks used
+            # by every renderer.
             analysis = analyse_paint_groups(
                 image,
                 full_car,

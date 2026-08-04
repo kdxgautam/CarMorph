@@ -1,3 +1,5 @@
+"""Build constrained generative prompts from validated edit requests."""
+
 from app.modifications.schemas import (
     RacingStripeElement,
     SurfaceEditRequest,
@@ -5,6 +7,8 @@ from app.modifications.schemas import (
 
 
 def build_surface_prompt(modification: SurfaceEditRequest) -> str:
+    """Build a bounded provider prompt that preserves identity and protection."""
+
     finish = modification.finish.value
     colour = modification.body_colour or "the existing base colour"
     parts = [

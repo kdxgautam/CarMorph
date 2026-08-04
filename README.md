@@ -5,6 +5,9 @@ segments reusable masks once, previews deterministic body recolours, and can
 render controlled surface edits such as finish changes and simple racing
 stripes while restoring original pixels outside editable paint.
 
+For a guided code tour, processing flow, stored-asset anatomy, and debugging
+checklist, see [PROJECT_GUIDE.md](PROJECT_GUIDE.md).
+
 This project is not production-ready. The current car-parts weights are
 AGPL-3.0, FLUX.1 Kontext dev is not a production-commercial model, the public
 Hugging Face Space is development-only, and process-local locks are not

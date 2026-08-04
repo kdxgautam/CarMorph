@@ -1,3 +1,5 @@
+"""Generate human-readable overlays for paint-analysis diagnostics."""
+
 import cv2
 import numpy as np
 from PIL import Image
@@ -17,6 +19,8 @@ PROTECTED_COLOUR = (220, 50, 50)
 def paint_group_overlay(
     image: Image.Image, group_masks: dict[PaintGroup, np.ndarray]
 ) -> Image.Image:
+    """Overlay editable, contrast, unknown, and protected group colours."""
+
     source = np.asarray(image.convert("RGB")).copy()
     tint = source.copy()
     for group, mask in group_masks.items():
@@ -26,6 +30,8 @@ def paint_group_overlay(
 
 
 def anchor_overlay(image: Image.Image, anchors: np.ndarray) -> Image.Image:
+    """Highlight the pixels used to estimate the main paint profile."""
+
     source = np.asarray(image.convert("RGB")).copy()
     tint = source.copy()
     tint[anchors >= 128] = (30, 220, 220)
@@ -39,6 +45,8 @@ def surface_completion_overlay(
     seeds: np.ndarray,
     main_body: np.ndarray,
 ) -> Image.Image:
+    """Visualize candidates, accepted body, strict seeds, and hard protection."""
+
     source = np.asarray(image.convert("RGB")).copy()
     tint = source.copy()
     tint[safe_candidate >= 128] = (230, 190, 30)

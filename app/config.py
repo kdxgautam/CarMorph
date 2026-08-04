@@ -1,9 +1,12 @@
+"""Environment-backed pipeline settings and detector label mappings."""
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.errors import PipelineError
 
+# Normalise provider-specific class names into the small vocabulary used downstream.
 PART_GROUPS = {
     "wheels": {
         "wheel",
@@ -97,6 +100,7 @@ NON_PAINTABLE_PART_GROUPS = {
     "grille",
     "trim",
 }
+# Required groups fail processing; expected groups only produce quality warnings.
 REQUIRED_PART_GROUPS_BY_VIEW = {
     "front": {"windows"},
     "rear": {"windows"},
@@ -142,6 +146,8 @@ YOLO_PART_PROMPTS_BY_VIEW = {
 
 @dataclass(frozen=True)
 class Settings:
+    """Validated runtime configuration for models, masks, storage, and growth."""
+
     roboflow_api_url: str
     roboflow_api_key: str
     roboflow_segmenter: str
@@ -180,6 +186,8 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
+        """Load settings from environment variables and reject unsafe values."""
+
         required = ("ROBOFLOW_API_KEY",)
         missing = [name for name in required if not os.getenv(name)]
         if missing:

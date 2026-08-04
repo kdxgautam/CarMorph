@@ -1,3 +1,5 @@
+"""Verify mask invariants and rendered-pixel preservation guarantees."""
+
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -9,6 +11,8 @@ from app.paint_analysis.schemas import PaintGroup
 
 
 class QualityStatus(StrEnum):
+    """Stable quality outcome persisted with each render."""
+
     PASSED = "passed"
     PASSED_WITH_WARNINGS = "passed_with_warnings"
     FAILED = "failed"
@@ -16,10 +20,14 @@ class QualityStatus(StrEnum):
 
 @dataclass
 class QualityResult:
+    """Quality outcome and machine-readable warning codes."""
+
     status: QualityStatus
     warnings: list[str] = field(default_factory=list)
 
     def model_dump(self) -> dict:
+        """Return the small JSON-safe shape written to quality.json."""
+
         return {"status": self.status.value, "warnings": self.warnings}
 
 
@@ -34,7 +42,11 @@ def check_paint_analysis(
     paint_like_residual_mask: np.ndarray | None = None,
     minimum_residual_pixels: int = 64,
 ) -> list[str]:
+    """Return warnings for overlap, emptiness, fragmentation, and low confidence."""
+
     warnings = []
+    # Overlap means precedence was lost before rendering, so report it at the
+    # earliest stage where all classified groups are available.
     occupied = np.zeros(masks.editable.shape, np.uint8)
     for mask in group_masks.values():
         if np.any((occupied > 0) & (mask >= 128)):
@@ -93,6 +105,8 @@ def check_render(
     editable_mask: np.ndarray,
     protected_mask: np.ndarray | None = None,
 ) -> QualityResult:
+    """Verify dimensions and that changes stay outside protected/background pixels."""
+
     warnings = []
     if result.size != original.size:
         return QualityResult(QualityStatus.FAILED, ["result_dimensions_mismatch"])

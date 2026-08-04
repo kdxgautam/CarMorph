@@ -1,3 +1,5 @@
+"""Grow strict paint seeds across coherent panels without crossing protection."""
+
 from dataclasses import dataclass
 
 import cv2
@@ -15,6 +17,8 @@ from app.paint_analysis.schemas import (
 
 @dataclass(frozen=True)
 class SurfaceCompletionResult:
+    """Completed body surface plus every intermediate diagnostic mask."""
+
     safe_candidate: np.ndarray
     hard_protected: np.ndarray
     growth_candidate: np.ndarray
@@ -24,14 +28,20 @@ class SurfaceCompletionResult:
 
 
 def _binary(mask: np.ndarray) -> np.ndarray:
+    """Apply the shared 128 threshold and return a boolean mask."""
+
     return mask >= 128
 
 
 def _mask(value: np.ndarray) -> np.ndarray:
+    """Convert a boolean selection to a persisted uint8 mask."""
+
     return np.where(value, 255, 0).astype(np.uint8)
 
 
 def _component_metrics(mask: np.ndarray, minimum_area: int) -> tuple[int, int]:
+    """Count all connected components and those below the useful-area limit."""
+
     count, _, stats, _ = cv2.connectedComponentsWithStats(_mask(mask))
     areas = stats[1:, cv2.CC_STAT_AREA] if count > 1 else np.array([])
     return len(areas), int(np.count_nonzero(areas < minimum_area))
@@ -40,6 +50,8 @@ def _component_metrics(mask: np.ndarray, minimum_area: int) -> tuple[int, int]:
 def _small_gap_pixels(
     accepted: np.ndarray, safe: np.ndarray, maximum_area: int
 ) -> int:
+    """Count unaccepted safe components small enough to be internal gaps."""
+
     count, _, stats, _ = cv2.connectedComponentsWithStats(_mask(safe & ~accepted))
     return int(
         sum(
@@ -53,6 +65,8 @@ def _small_gap_pixels(
 def _neighbour_mean(
     lab: np.ndarray, accepted: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Compute local accepted-neighbor LAB means and supporting counts."""
+
     count = cv2.boxFilter(
         accepted.astype(np.float32),
         -1,
@@ -83,6 +97,14 @@ def complete_body_surface(
     profile: BodyPaintProfile,
     settings: object,
 ) -> SurfaceCompletionResult:
+    """Grow strict body-paint seeds through coherent, unprotected surfaces.
+
+    The algorithm combines relaxed global chroma eligibility, local LAB
+    agreement, gradient-aware iterative growth, bounded morphology, and
+    connected-region voting. It returns diagnostic evidence even when no
+    reliable profile or safe candidate exists.
+    """
+
     safe = _binary(safe_candidate) & ~_binary(hard_protected)
     protected = _binary(hard_protected)
     if not profile.median_lab or not np.any(safe):
@@ -107,6 +129,8 @@ def complete_body_surface(
         _mask(protected),
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
     ) > 0
+    # Seeds are deliberately conservative; completeness comes from constrained
+    # growth, not from relaxing this initial decision.
     strict = (
         safe
         & ~protected_margin
@@ -131,6 +155,8 @@ def complete_body_surface(
     gradient_y = cv2.Sobel(blurred_l, cv2.CV_32F, 0, 1, ksize=3)
     gradient = cv2.magnitude(gradient_x, gradient_y)
 
+    # Grow only through globally plausible paint whose local LAB neighbourhood
+    # remains coherent and does not cross a strong image boundary.
     accepted = seeds.copy()
     iterations = 0
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -196,6 +222,8 @@ def complete_body_surface(
         & (global_chroma <= settings.body_growth_chroma_threshold * 1.25)
     )
 
+    # Remaining connected regions receive a whole-region vote, avoiding scattered
+    # holes caused by highlights, compression, or panel curvature.
     regions = []
     remaining = safe & ~accepted & (
         global_chroma <= settings.body_growth_chroma_threshold * 1.25

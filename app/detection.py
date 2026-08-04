@@ -1,3 +1,5 @@
+"""Local vehicle/part detection and automatic cardinal-view inference."""
+
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -17,6 +19,8 @@ MIN_VIEW_SCORE = 0.8
 MIN_VIEW_CONFIDENCE = 0.65
 FACE_TO_SIDE_RATIO = 0.8
 
+# Each family contributes at most its strongest label, preventing duplicate boxes
+# for one physical part from inflating an orientation score.
 VIEW_FAMILIES = {
     "front": (
         {"grille", "hood"},
@@ -52,17 +56,23 @@ VIEW_FAMILIES = {
 
 @dataclass(frozen=True)
 class CarDetection:
+    """A candidate vehicle box in full-image coordinates."""
+
     box: tuple[int, int, int, int]
     confidence: float
 
     @property
     def area(self) -> int:
+        """Return box area for primary-car ranking."""
+
         x1, y1, x2, y2 = self.box
         return (x2 - x1) * (y2 - y1)
 
 
 @dataclass(frozen=True)
 class PartDetection:
+    """A normalized part prediction, optionally carrying polygon and clip data."""
+
     group: str
     box: tuple[float, float, float, float]
     confidence: float
@@ -71,10 +81,14 @@ class PartDetection:
 
 
 def _normalise(value: object) -> str:
+    """Convert provider labels to lowercase underscore-separated identifiers."""
+
     return re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
 
 
 def _part_group(class_name: object, view: ViewName | None = None) -> str | None:
+    """Map a provider-specific label to the pipeline's semantic part group."""
+
     name = _normalise(class_name)
     return next(
         (
@@ -88,6 +102,14 @@ def _part_group(class_name: object, view: ViewName | None = None) -> str | None:
 
 
 def infer_view(evidence: list[tuple[str, float]]) -> tuple[ViewName, float]:
+    """Resolve a cardinal view from raw part evidence or raise ambiguity.
+
+    Scores use the maximum confidence within each physical-part family so
+    duplicate detections cannot dominate. Front/rear evidence wins a
+    three-quarter image when it remains close to the strongest side score.
+    """
+
+    # Preserve the strongest observation for each raw model label.
     confidences: dict[str, float] = {}
     for label, confidence in evidence:
         label = _normalise(label)
@@ -101,6 +123,8 @@ def infer_view(evidence: list[tuple[str, float]]) -> tuple[ViewName, float]:
     }
 
     def winner(first: ViewName, second: ViewName) -> tuple[ViewName, float, float]:
+        """Return the stronger opposite direction and its normalized margin."""
+
         selected, other = (
             (first, second) if scores[first] >= scores[second] else (second, first)
         )
@@ -118,6 +142,8 @@ def infer_view(evidence: list[tuple[str, float]]) -> tuple[ViewName, float]:
         side_score >= MIN_VIEW_SCORE
         and side_confidence >= MIN_VIEW_CONFIDENCE
     )
+    # Prefer the visible face in three-quarter photographs when it is nearly as
+    # strong as the side evidence; downstream schemas remain cardinal.
     if face_valid and (
         not side_valid or face_score >= side_score * FACE_TO_SIDE_RATIO
     ):
@@ -131,6 +157,8 @@ def infer_view(evidence: list[tuple[str, float]]) -> tuple[ViewName, float]:
 
 
 def _model_classes(car_class: str) -> tuple[str, ...]:
+    """Build one stable, deduplicated YOLO-World vocabulary for cached reuse."""
+
     return tuple(
         dict.fromkeys(
             [
@@ -147,6 +175,8 @@ def _model_classes(car_class: str) -> tuple[str, ...]:
 
 @lru_cache(maxsize=1)
 def _load_model(model_id: str, classes: tuple[str, ...]) -> Any:
+    """Load and configure the shared YOLO-World model once per process."""
+
     from ultralytics import YOLOWorld
 
     model = YOLOWorld(model_id)
@@ -156,6 +186,8 @@ def _load_model(model_id: str, classes: tuple[str, ...]) -> Any:
 
 @lru_cache(maxsize=1)
 def _load_parts_model(model_id: str) -> Any:
+    """Load pinned local car-parts weights after checking that they exist."""
+
     if not Path(model_id).is_file():
         raise PipelineError(
             "configuration_error",
@@ -170,6 +202,8 @@ def _load_parts_model(model_id: str) -> Any:
 def select_primary_car(
     cars: list[CarDetection], competing_ratio: float
 ) -> CarDetection:
+    """Select the largest car unless another candidate is similarly prominent."""
+
     if not cars:
         raise PipelineError("no_car_detected", "No car was detected in the image")
 
@@ -183,6 +217,8 @@ def select_primary_car(
 
 
 def _iou(first: PartDetection, second: PartDetection) -> float:
+    """Return intersection-over-union for duplicate part suppression."""
+
     ax1, ay1, ax2, ay2 = first.box
     bx1, by1, bx2, by2 = second.box
     intersection = max(0, min(ax2, bx2) - max(ax1, bx1)) * max(
@@ -194,6 +230,8 @@ def _iou(first: PartDetection, second: PartDetection) -> float:
 
 
 def _deduplicate(parts: list[PartDetection]) -> list[PartDetection]:
+    """Keep the strongest overlapping prediction for each semantic group."""
+
     kept: list[PartDetection] = []
     for part in sorted(parts, key=lambda item: item.confidence, reverse=True):
         if all(
@@ -205,12 +243,16 @@ def _deduplicate(parts: list[PartDetection]) -> list[PartDetection]:
 
 
 def _side_window_prompts(doors: list[PartDetection]) -> list[PartDetection]:
+    """Derive upper-door SAM prompts that recover transparent side windows."""
+
     doors = _deduplicate(doors)
     if not doors:
         raise PipelineError(
             "missing_masks",
             "Part detection did not find doors needed to segment side windows",
         )
+    # Door geometry is more reliable than a generic window box for recovering
+    # transparent side glass. The clip keeps SAM out of the lower door panel.
     return [
         PartDetection(
             "windows",
@@ -231,6 +273,8 @@ def _side_window_prompts(doors: list[PartDetection]) -> list[PartDetection]:
 def _with_side_window_prompts(
     parts: list[PartDetection], doors: list[PartDetection]
 ) -> list[PartDetection]:
+    """Add a side-window prompt for every detected door, including 3/4 views."""
+
     if doors:
         return [*parts, *_side_window_prompts(doors)]
     if not any(part.group == "windows" for part in parts):
@@ -239,6 +283,8 @@ def _with_side_window_prompts(
 
 
 def validate_view(view: ViewName, parts: list[PartDetection]) -> None:
+    """Reject a clearly side-on image submitted with a manual face view."""
+
     if (
         view in {"front", "rear"}
         and not any(part.group == "plate" for part in parts)
@@ -253,6 +299,13 @@ def validate_view(view: ViewName, parts: list[PartDetection]) -> None:
 def detect_car_and_parts(
     image: Image.Image, settings: Settings, view: ViewSelection
 ) -> tuple[CarDetection, list[PartDetection], ViewName, float | None]:
+    """Detect one car and reusable part prompts in full-image coordinates.
+
+    The specialized local model supplies detailed labels and view evidence;
+    YOLO-World supplements generic semantic parts. Automatic view resolution
+    occurs between those passes and manual views retain legacy validation.
+    """
+
     try:
         with _YOLO_LOCK:
             model = _load_model(
@@ -374,6 +427,8 @@ def detect_car_and_parts(
                     )
                 )
 
+    # Automatic selection consumes the same local detection pass; no extra model
+    # or external request is needed.
     resolved_view, view_confidence = (
         infer_view(view_evidence) if view == "auto" else (view, None)
     )
@@ -437,5 +492,6 @@ def detect_car_and_parts(
                 0,
             )
         )
+    # Three-quarter cars may resolve to front/rear while still exposing doors.
     parts = _with_side_window_prompts(parts, doors)
     return car, parts, resolved_view, view_confidence

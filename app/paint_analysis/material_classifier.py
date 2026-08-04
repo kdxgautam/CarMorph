@@ -1,3 +1,5 @@
+"""Conservative semantic and appearance-based material classification."""
+
 import cv2
 import numpy as np
 from PIL import Image
@@ -18,6 +20,14 @@ SEMANTIC_MATERIALS = {
 def classify_material(
     image: Image.Image, mask: np.ndarray, part_type: str
 ) -> tuple[MaterialType, float, list[str]]:
+    """Classify one region using semantic precedence and appearance statistics.
+
+    The return tuple contains material, confidence, and stable reason codes for
+    persisted diagnostics. Empty regions remain unknown rather than paintable.
+    """
+
+    # Reliable part identity outranks coincidental colour similarity (for
+    # example, body-colour reflections in glass).
     if part_type in SEMANTIC_MATERIALS:
         return SEMANTIC_MATERIALS[part_type], 0.98, ["semantic_part_protection"]
     pixels = np.asarray(image.convert("RGB"))[mask >= 128]

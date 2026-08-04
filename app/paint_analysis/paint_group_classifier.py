@@ -1,3 +1,5 @@
+"""Assign car regions to editable paint, protected material, or uncertainty."""
+
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -40,6 +42,8 @@ PROTECTED_SEMANTICS = {
 
 @dataclass(frozen=True)
 class PaintAnalysisResult:
+    """Masks, diagnostics, and surface evidence produced by one analysis pass."""
+
     report: PaintGroupReport
     group_masks: dict[PaintGroup, np.ndarray]
     masks: PaintAnalysisMasks
@@ -51,6 +55,8 @@ class PaintAnalysisResult:
 def _relation(
     lab: np.ndarray, mask: np.ndarray, profile_lab: np.ndarray, threshold: float
 ) -> tuple[float, float, float]:
+    """Summarize median chroma similarity and lightness difference to paint."""
+
     pixels = lab[mask >= 128]
     if not len(pixels) or not len(profile_lab):
         return 0, 0, 0
@@ -66,8 +72,18 @@ def analyse_paint_groups(
     part_masks: dict[str, np.ndarray],
     settings: object,
 ) -> PaintAnalysisResult:
+    """Classify the car into disjoint editable, protected, and uncertain groups.
+
+    Semantic materials claim pixels first. Configurable painted parts are split
+    by material and relation to the dominant body profile. Remaining body pixels
+    pass through constrained surface completion and adjacency-based region
+    recovery. No decision may claim pixels outside the full-car mask.
+    """
+
     shape = full_car.shape
     car_pixels = max(1, int(np.count_nonzero(full_car >= 128)))
+    # Start profile estimation away from semantic parts. Dark-trim remains a
+    # candidate because dark paint must not be rejected solely by brightness.
     known = [
         mask >= 128
         for name, mask in part_masks.items()
@@ -95,6 +111,10 @@ def analyse_paint_groups(
     paint_like_residual = np.zeros(shape, np.uint8)
 
     def add(group: PaintGroup, mask: np.ndarray) -> None:
+        """Claim still-unassigned car pixels for one paint group."""
+
+        # First claim wins, encoding material precedence and guaranteeing that
+        # persisted paint-group masks remain disjoint.
         binary = (mask >= 128) & (full_car >= 128) & ~claimed
         if np.any(binary):
             groups[group] = np.maximum(
@@ -106,6 +126,8 @@ def analyse_paint_groups(
     body_is_chromatic = len(profile_lab) and np.linalg.norm(profile_lab[1:]) > 20
 
     def painted_part_edge(mask: np.ndarray, kernel_size: int = 5) -> np.ndarray:
+        """Recover body-compatible overspill along an imprecise semantic edge."""
+
         binary = mask >= 128
         interior = cv2.erode(
             np.where(binary, 255, 0).astype(np.uint8),
@@ -148,6 +170,7 @@ def analyse_paint_groups(
             & (np.linalg.norm(lab - local_mean, axis=2) <= 20)
         )
 
+    # Hard semantic materials are classified before colour-based recovery.
     for part_type, group in PROTECTED_SEMANTICS.items():
         mask = part_masks.get(part_type)
         if mask is None:
@@ -494,6 +517,8 @@ def analyse_paint_groups(
             )
         )
 
+    # Recover small missed red/orange lenses or decals on non-red vehicles.
+    # Connected components reject isolated warm reflections in dark paint.
     dominant_hue = profile.dominant_hsv[0] if profile.dominant_hsv else 0
     if not (dominant_hue <= 35 or dominant_hue >= 325):
         contrast_lens = (
@@ -515,6 +540,8 @@ def analyse_paint_groups(
             np.where(lens_regions, 255, 0).astype(np.uint8),
         )
 
+    # A bumper label describes geometry, not material: recover compatible painted
+    # pixels and protect only strongly contrasting dark-neutral sections.
     bumper = part_masks.get("bumper")
     if bumper is not None:
         bumper_candidate = bumper.copy()
@@ -570,6 +597,7 @@ def analyse_paint_groups(
             np.where(bumper_plastic, 255, 0).astype(np.uint8),
         )
 
+    # Only unclaimed car pixels may participate in seeded surface completion.
     residual = (full_car >= 128) & ~claimed
     hard_protected = union_group_masks(
         groups,

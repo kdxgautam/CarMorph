@@ -1,3 +1,5 @@
+"""Renderer protocol, result model, and deterministic cache keys."""
+
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +13,8 @@ RENDERER_CACHE_VERSION = "surface-render-2"
 
 @dataclass(frozen=True)
 class RenderResult:
+    """Persisted render path plus cache and quality metadata for HTTP headers."""
+
     path: Path
     cached: bool
     renderer: str
@@ -19,6 +23,8 @@ class RenderResult:
 
 
 class ModificationRenderer(Protocol):
+    """Common keyword-only interface implemented by surface renderers."""
+
     def render(
         self,
         *,
@@ -26,11 +32,17 @@ class ModificationRenderer(Protocol):
         metadata: AssetBundle,
         modification: SurfaceEditRequest,
     ) -> RenderResult:
+        """Render one validated modification against a prepared asset."""
+
         ...
 
 
 class GenerativePartReplacementRenderer:
+    """Explicit placeholder for out-of-scope physical part replacement."""
+
     def render(self, *args, **kwargs) -> RenderResult:
+        """Reject use until a safe part-replacement milestone exists."""
+
         raise NotImplementedError("Part replacement rendering is a future milestone")
 
 
@@ -42,6 +54,8 @@ def request_hash(
     settings: str = "",
     pipeline_version: str = "legacy",
 ) -> str:
+    """Create a stable render cache key from request, provider, and versions."""
+
     payload = "|".join(
         [
             RENDERER_CACHE_VERSION,
