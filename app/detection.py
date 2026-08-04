@@ -52,7 +52,22 @@ def _part_group(class_name: object, view: ViewName | None = None) -> str | None:
     )
 
 
-@lru_cache(maxsize=4)
+def _model_classes(car_class: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            [
+                car_class,
+                *(
+                    prompt
+                    for prompts in YOLO_PART_PROMPTS_BY_VIEW.values()
+                    for prompt in prompts
+                ),
+            ]
+        )
+    )
+
+
+@lru_cache(maxsize=1)
 def _load_model(model_id: str, classes: tuple[str, ...]) -> Any:
     from ultralytics import YOLOWorld
 
@@ -162,9 +177,11 @@ def detect_car_and_parts(
 ) -> tuple[CarDetection, list[PartDetection]]:
     try:
         with _YOLO_LOCK:
-            car_result = _load_model(
-                settings.yolo_model_id, (settings.yolo_car_class,)
-            ).predict(
+            model = _load_model(
+                settings.yolo_model_id,
+                _model_classes(settings.yolo_car_class),
+            )
+            car_result = model.predict(
                 image,
                 conf=settings.yolo_confidence,
                 verbose=False,
@@ -174,10 +191,15 @@ def detect_car_and_parts(
 
     cars = []
     if car_result.boxes is not None:
-        for xyxy, confidence in zip(
+        for xyxy, confidence, class_id in zip(
             car_result.boxes.xyxy.cpu().tolist(),
             car_result.boxes.conf.cpu().tolist(),
+            car_result.boxes.cls.cpu().tolist(),
         ):
+            if _normalise(car_result.names[int(class_id)]) != _normalise(
+                settings.yolo_car_class
+            ):
+                continue
             x1, y1, x2, y2 = (
                 max(0, min(image.width, round(xyxy[0]))),
                 max(0, min(image.height, round(xyxy[1]))),
@@ -273,9 +295,11 @@ def detect_car_and_parts(
 
     try:
         with _YOLO_LOCK:
-            part_result = _load_model(
-                settings.yolo_model_id, tuple(YOLO_PART_PROMPTS_BY_VIEW[view])
-            ).predict(
+            model = _load_model(
+                settings.yolo_model_id,
+                _model_classes(settings.yolo_car_class),
+            )
+            part_result = model.predict(
                 crop,
                 conf=settings.parts_confidence,
                 verbose=False,

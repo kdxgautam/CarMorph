@@ -98,10 +98,16 @@ NON_PAINTABLE_PART_GROUPS = {
     "trim",
 }
 REQUIRED_PART_GROUPS_BY_VIEW = {
-    "front": {"windows", "plate"},
-    "rear": {"windows", "plate"},
+    "front": {"windows"},
+    "rear": {"windows"},
     "left": {"wheels", "windows"},
     "right": {"wheels", "windows"},
+}
+EXPECTED_PROTECTIVE_PART_GROUPS_BY_VIEW = {
+    "front": {"windows", "lights"},
+    "rear": {"windows", "lights"},
+    "left": {"wheels", "windows", "lights", "mirrors"},
+    "right": {"wheels", "windows", "lights", "mirrors"},
 }
 YOLO_PART_PROMPTS_BY_VIEW = {
     "front": [

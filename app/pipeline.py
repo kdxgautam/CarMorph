@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from app.config import (
+    EXPECTED_PROTECTIVE_PART_GROUPS_BY_VIEW,
     OUTPUT_PART_GROUPS,
     REQUIRED_PART_GROUPS_BY_VIEW,
     Settings,
@@ -44,7 +45,7 @@ from app.schemas import (
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"24"
+PIPELINE_VERSION = b"26"
 PAINT_ANALYSIS_VERSION = "paint-groups-v10"
 
 PAINT_GROUP_FILENAMES = {
@@ -96,6 +97,19 @@ def _refine_side_windows(
     if mirrors is not None:
         windows[mirrors >= 128] = 0
     return windows
+
+
+def _hybrid_semantic_groups(view: ViewName) -> dict[str, str]:
+    groups = {
+        "handles": "car door handle",
+        "lights": "car light",
+        "mirrors": "car side mirror",
+        "pillars": "car window pillar",
+        "trim": "black car trim",
+    }
+    if view in {"front", "rear"}:
+        groups["plate"] = "license plate"
+    return groups
 
 
 def _read_result(metadata: Path) -> AssetBundle:
@@ -199,11 +213,7 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                     )
 
             if settings.roboflow_segmenter == "hybrid":
-                semantic_groups = {
-                    "handles": "car door handle",
-                    "pillars": "car window pillar",
-                    "trim": "black car trim",
-                }
+                semantic_groups = _hybrid_semantic_groups(view)
                 semantic_masks = segment_concepts(
                     image_jpeg, list(semantic_groups.values()), settings
                 )
@@ -256,6 +266,10 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 settings.mask_feather_radius,
             )
             absent_output_masks = sorted(OUTPUT_PART_GROUPS - part_masks.keys())
+            missing_expected_masks = sorted(
+                EXPECTED_PROTECTIVE_PART_GROUPS_BY_VIEW[view]
+                - part_masks.keys()
+            )
             for group in absent_output_masks:
                 part_masks[group] = np.zeros_like(full_car)
 
@@ -413,10 +427,10 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                 },
                 warnings=(
                     [
-                        "Parts not visible or detected; empty masks stored: "
-                        + ", ".join(absent_output_masks)
+                        "Expected protective masks were not detected: "
+                        + ", ".join(missing_expected_masks)
                     ]
-                    if absent_output_masks
+                    if missing_expected_masks
                     else []
                 ),
                 paintability_report=paintability_report,

@@ -27,13 +27,18 @@ from app.detection import (
     CarDetection,
     PartDetection,
     _deduplicate,
+    _model_classes,
     _part_group,
     _side_window_prompts,
     _with_side_window_prompts,
     select_primary_car,
     validate_view,
 )
-from app.config import NON_PAINTABLE_PART_GROUPS
+from app.config import (
+    EXPECTED_PROTECTIVE_PART_GROUPS_BY_VIEW,
+    NON_PAINTABLE_PART_GROUPS,
+    REQUIRED_PART_GROUPS_BY_VIEW,
+)
 from app.errors import PipelineError
 from app.flux import FluxSettings, render_flux
 from app.flux import composite_design, composite_plain_colour
@@ -46,7 +51,12 @@ from app.image_ops import (
     recolour,
 )
 from app.roboflow import segment_boxes, segment_concepts
-from app.pipeline import _asset_id, _clip_fallback_mask, _refine_side_windows
+from app.pipeline import (
+    _asset_id,
+    _clip_fallback_mask,
+    _hybrid_semantic_groups,
+    _refine_side_windows,
+)
 from app.schemas import AssetBundle, BoundingBox
 
 
@@ -226,6 +236,12 @@ class PipelineTest(unittest.TestCase):
         wheel = PartDetection("wheels", (5, 5, 105, 105), 0.8)
         self.assertEqual(_deduplicate([weaker, wheel, stronger]), [stronger, wheel])
 
+    def test_yolo_world_uses_one_deduplicated_class_set(self) -> None:
+        classes = _model_classes("car")
+        self.assertEqual(classes[0], "car")
+        self.assertEqual(len(classes), len(set(classes)))
+        self.assertIn("license plate", classes)
+
     def test_side_aware_replacement_model_labels_are_mapped(self) -> None:
         self.assertEqual(_part_group("left_front-wheel"), "wheels")
         self.assertEqual(_part_group("right_back-window"), "windows")
@@ -333,6 +349,23 @@ class PipelineTest(unittest.TestCase):
         with self.assertRaisesRegex(PipelineError, "side view"):
             validate_view("front", wheels)
         validate_view("right", wheels)
+
+    def test_plate_is_recovered_when_present_but_is_not_required(self) -> None:
+        self.assertEqual(REQUIRED_PART_GROUPS_BY_VIEW["front"], {"windows"})
+        self.assertEqual(REQUIRED_PART_GROUPS_BY_VIEW["rear"], {"windows"})
+        self.assertEqual(
+            _hybrid_semantic_groups("front")["plate"], "license plate"
+        )
+        self.assertEqual(
+            _hybrid_semantic_groups("right")["lights"], "car light"
+        )
+        self.assertEqual(
+            _hybrid_semantic_groups("right")["mirrors"], "car side mirror"
+        )
+        self.assertNotIn("plate", _hybrid_semantic_groups("right"))
+        self.assertNotIn(
+            "plate", EXPECTED_PROTECTIVE_PART_GROUPS_BY_VIEW["front"]
+        )
 
     def test_flux_changes_only_body_mask_and_caches(self) -> None:
         with TemporaryDirectory() as temporary:
