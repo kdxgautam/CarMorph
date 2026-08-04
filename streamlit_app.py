@@ -91,6 +91,10 @@ with evaluation_tab:
                 caption="Recoloured · #183A63 glossy",
                 width="stretch",
             )
+            result_column.caption(
+                f"Quality: {item['quality'].replace('_', ' ')} · "
+                f"{len(item['warnings'])} diagnostic warning(s)"
+            )
         elif item["status"] == "failed":
             result_column.error(f"{item['error']} ({item['code']})")
         else:
