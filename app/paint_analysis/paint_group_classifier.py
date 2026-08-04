@@ -375,6 +375,47 @@ def analyse_paint_groups(
         mask = part_masks.get(part_type)
         if mask is None:
             continue
+        mask = np.where((mask >= 128) & ~claimed, 255, 0).astype(np.uint8)
+        if not np.any(mask):
+            continue
+        compatible = (
+            (mask >= 128)
+            & (
+                chroma_distance(lab, profile_lab)
+                <= settings.body_growth_chroma_threshold
+            )
+            & (
+                np.abs(lab[:, :, 0] - profile_lab[0])
+                <= settings.body_paint_lightness_threshold
+            )
+        )
+        if body_is_chromatic:
+            compatible &= hsv[:, :, 1] >= 50
+        if np.any(compatible):
+            matching_mask = np.where(compatible, 255, 0).astype(np.uint8)
+            similarity, _, lightness = _relation(
+                lab,
+                matching_mask,
+                profile_lab,
+                settings.body_paint_chroma_threshold,
+            )
+            add(matching_group, matching_mask)
+            regions.append(
+                RegionClassification(
+                    region_id=f"{part_type}_body_compatible",
+                    part_type=part_type,
+                    paint_group=matching_group,
+                    material_type=MaterialType.PAINTED_SURFACE,
+                    body_colour_similarity=round(similarity, 4),
+                    lightness_difference=round(lightness, 3),
+                    confidence=round(min(0.9, similarity), 4),
+                    paintability=Paintability.EDITABLE,
+                    reason_codes=["body_compatible_part_pixels"],
+                )
+            )
+            mask[compatible] = 0
+        if not np.any(mask):
+            continue
         material, material_confidence, reasons = classify_material(image, mask, part_type)
         if part_type == "roof" and material in {
             MaterialType.MATTE_PLASTIC,

@@ -282,6 +282,26 @@ class PaintAnalysisTest(unittest.TestCase):
         )
         self.assertIn(PaintGroup.CONTRASTING_MIRROR_CAP, contrasting.group_masks)
 
+    def test_body_coloured_roof_strip_is_separated_from_rear_glass(self) -> None:
+        pixels = np.full((80, 100, 3), (180, 35, 30), np.uint8)
+        roof = rectangle((80, 100), (20, 5, 80, 35))
+        window = rectangle((80, 100), (25, 20, 75, 35))
+        pixels[10:20, 20:80] = (15, 15, 15)
+        pixels[window > 0] = (80, 100, 115)
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((80, 100), 255, np.uint8),
+            {"roof": roof, "windows": window},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.editable[7, 50], 255)
+        self.assertEqual(result.masks.protected[25, 50], 255)
+        self.assertFalse(
+            np.any((result.masks.editable > 0) & (result.masks.protected > 0))
+        )
+
     def test_large_unrelated_painted_body_region_is_secondary(self) -> None:
         pixels = np.full((100, 100, 3), (180, 35, 30), np.uint8)
         pixels[55:90, 15:85] = (25, 60, 190)

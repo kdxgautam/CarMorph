@@ -45,8 +45,8 @@ from app.schemas import (
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"26"
-PAINT_ANALYSIS_VERSION = "paint-groups-v10"
+PIPELINE_VERSION = b"28"
+PAINT_ANALYSIS_VERSION = "paint-groups-v12"
 
 PAINT_GROUP_FILENAMES = {
     PaintGroup.MAIN_BODY_PAINT: "main-body-paint-mask.png",
