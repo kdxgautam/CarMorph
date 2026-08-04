@@ -19,7 +19,9 @@ single_tab, evaluation_tab = st.tabs(("Customise one image", "Evaluation gallery
 with single_tab:
     uploaded = st.file_uploader("Car photo", type=("jpg", "jpeg", "png", "webp"))
     with st.form("paint-controls"):
-        view = st.selectbox("Visible car view", ("right", "left", "front", "rear"))
+        view = st.selectbox(
+            "Visible car view", ("auto", "front", "rear", "left", "right")
+        )
         colour = st.color_picker("Body colour", "#183A63")
         finish = st.selectbox("Paint finish", ("glossy", "matte", "metallic"))
         submitted = st.form_submit_button(
@@ -50,10 +52,21 @@ with single_tab:
                     )
                     rendered = Path(result.path).read_bytes()
             except PipelineError as exc:
-                st.error(f"{exc.detail} ({exc.code})")
+                if exc.code == "ambiguous_view":
+                    st.error(
+                        "Could not determine the view confidently. "
+                        "Select front, rear, left, or right and try again."
+                    )
+                else:
+                    st.error(f"{exc.detail} ({exc.code})")
             except (OSError, ValueError) as exc:
                 st.error(f"Could not process this image: {exc}")
             else:
+                if metadata.requested_view == "auto":
+                    st.info(
+                        f"Detected view: {metadata.view} "
+                        f"({metadata.view_confidence:.0%} confidence)"
+                    )
                 result_column.image(
                     rendered, caption="Recoloured", width="stretch"
                 )

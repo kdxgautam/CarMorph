@@ -18,7 +18,7 @@ from app.modifications.instructions import merge_instruction
 from app.modifications.planner import choose_renderer
 from app.modifications.schemas import parse_modification
 from app.pipeline import process_view
-from app.schemas import AssetBundle, ViewName
+from app.schemas import AssetBundle, ViewSelection
 
 app = FastAPI(title="Car Customisation API", version="0.1.0")
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -61,7 +61,7 @@ def _asset(asset_id: str) -> tuple[Path, AssetBundle]:
 @app.post("/cars", response_model=AssetBundle, status_code=201)
 def upload_car(
     image: Annotated[UploadFile, File()],
-    view: Annotated[ViewName, Form()] = "front",
+    view: Annotated[ViewSelection, Form()] = "front",
 ) -> AssetBundle:
     data = image.file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:

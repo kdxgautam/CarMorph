@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from app.paint_analysis.schemas import BodyPaintProfile, PaintGroupReport
 
 ViewName = Literal["front", "left", "right", "rear"]
+ViewSelection = Literal["auto", "front", "left", "right", "rear"]
 
 
 class BoundingBox(BaseModel):
@@ -36,6 +37,8 @@ class AvailableModifications(BaseModel):
 class AssetBundle(BaseModel):
     asset_id: str
     view: ViewName
+    requested_view: ViewSelection | None = None
+    view_confidence: float | None = Field(default=None, ge=0, le=1)
     status: Literal["ready"] = "ready"
     width: int
     height: int

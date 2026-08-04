@@ -1,5 +1,6 @@
 import unittest
 from dataclasses import dataclass
+from inspect import signature
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,7 +12,7 @@ import numpy as np
 from PIL import Image
 from requests import Timeout
 
-from app.main import customise
+from app.main import customise, upload_car
 from app.modifications.instructions import RestrictedInstructionParser
 from app.modifications.schemas import (
     RacingStripeElement,
@@ -31,6 +32,7 @@ from app.detection import (
     _part_group,
     _side_window_prompts,
     _with_side_window_prompts,
+    infer_view,
     select_primary_car,
     validate_view,
 )
@@ -57,7 +59,7 @@ from app.pipeline import (
     _hybrid_semantic_groups,
     _refine_side_windows,
 )
-from app.schemas import AssetBundle, BoundingBox
+from app.schemas import AssetBundle, BoundingBox, ViewSelection
 
 
 class PipelineTest(unittest.TestCase):
@@ -325,6 +327,46 @@ class PipelineTest(unittest.TestCase):
     def test_asset_ids_include_view(self) -> None:
         self.assertEqual(_asset_id(b"image", "left"), _asset_id(b"image", "left"))
         self.assertNotEqual(_asset_id(b"image", "left"), _asset_id(b"image", "right"))
+        self.assertNotEqual(_asset_id(b"image", "auto"), _asset_id(b"image", "front"))
+
+    def test_automatic_view_scoring(self) -> None:
+        cases: list[tuple[list[tuple[str, float]], ViewSelection]] = [
+            ([('grille', 0.7), ('windshield', 0.7)], "front"),
+            ([('trunk', 0.7), ('back-windshield', 0.7)], "rear"),
+            ([('left_front-door', 0.7), ('left_front-window', 0.7)], "left"),
+            ([('right_front-door', 0.7), ('right_front-window', 0.7)], "right"),
+            (
+                [
+                    ('grille', 0.8),
+                    ('windshield', 0.8),
+                    ('left_front-door', 0.8),
+                    ('left_front-window', 0.8),
+                ],
+                "front",
+            ),
+            (
+                [
+                    ('trunk', 0.8),
+                    ('back-windshield', 0.8),
+                    ('right_back-door', 0.8),
+                    ('right_back-window', 0.8),
+                ],
+                "rear",
+            ),
+        ]
+        for evidence, expected in cases:
+            with self.subTest(expected=expected):
+                detected, confidence = infer_view(evidence)
+                self.assertEqual(detected, expected)
+                self.assertGreaterEqual(confidence, 0.65)
+
+        for evidence in (
+            [('grille', 0.7), ('trunk', 0.7)],
+            [('grille', 0.5)],
+        ):
+            with self.assertRaisesRegex(PipelineError, "choose front") as raised:
+                infer_view(evidence)
+            self.assertEqual(raised.exception.code, "ambiguous_view")
 
     def test_side_window_pillars_stay_paintable(self) -> None:
         windows = np.zeros((80, 100), np.uint8)
@@ -626,7 +668,13 @@ class PipelineTest(unittest.TestCase):
             models={},
         )
         self.assertEqual(bundle.pipeline_version, "legacy")
+        self.assertIsNone(bundle.requested_view)
+        self.assertIsNone(bundle.view_confidence)
         self.assertTrue(bundle.available_modifications.body_colour)
+
+    def test_upload_api_keeps_front_default_and_accepts_auto(self) -> None:
+        self.assertEqual(signature(upload_car).parameters["view"].default, "front")
+        self.assertIn("auto", ViewSelection.__args__)
 
     def test_customise_endpoint_headers(self) -> None:
         with TemporaryDirectory() as temporary:

@@ -101,7 +101,7 @@ streamlit run streamlit_app.py
 
 | Method | Route | Purpose |
 |---|---|---|
-| `POST` | `/cars` | Upload and segment one image |
+| `POST` | `/cars` | Upload and segment one image; use `view=auto` for local view detection |
 | `GET` | `/cars/{asset_id}` | Read stored metadata |
 | `GET` | `/cars/{asset_id}/assets/{path}` | Download original image or masks |
 | `GET` | `/cars/{asset_id}/preview?colour=2563eb` | Backward-compatible deterministic recolour |
@@ -179,6 +179,11 @@ curl -sS --fail-with-body \
 
 The last command returns an error envelope with
 `future_physical_modification`.
+
+The Streamlit interface defaults to automatic view detection. The API keeps
+`front` as its backward-compatible default and accepts `auto`, `front`, `rear`,
+`left`, or `right`. Low-confidence automatic results return `ambiguous_view`
+and require an explicit view.
 
 ## Supported modifications
 

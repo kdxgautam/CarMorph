@@ -9,10 +9,45 @@ from PIL import Image
 
 from app.config import PART_GROUPS, YOLO_PART_PROMPTS_BY_VIEW, Settings
 from app.errors import PipelineError
-from app.schemas import ViewName
+from app.schemas import ViewName, ViewSelection
 
 _YOLO_LOCK = Lock()
 MAX_PART_AREA_RATIO = 0.45
+MIN_VIEW_SCORE = 0.8
+MIN_VIEW_CONFIDENCE = 0.65
+FACE_TO_SIDE_RATIO = 0.8
+
+VIEW_FAMILIES = {
+    "front": (
+        {"grille", "hood"},
+        {"windshield"},
+        {"front_bumper"},
+        {"left_headlight", "right_headlight"},
+    ),
+    "rear": (
+        {"trunk"},
+        {"back_windshield"},
+        {"back_bumper"},
+        {"left_tail_light", "right_tail_light"},
+    ),
+    "left": (
+        {"left_front_door", "left_back_door"},
+        {"left_front_window", "left_back_window"},
+        {"left_front_wheel", "left_back_wheel"},
+        {"left_mirror", "left_fender", "left_quarter_panel", "left_rocker_panel"},
+    ),
+    "right": (
+        {"right_front_door", "right_back_door"},
+        {"right_front_window", "right_back_window"},
+        {"right_front_wheel", "right_back_wheel"},
+        {
+            "right_mirror",
+            "right_fender",
+            "right_quarter_panel",
+            "right_rocker_panel",
+        },
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -49,6 +84,49 @@ def _part_group(class_name: object, view: ViewName | None = None) -> str | None:
             or re.sub(r"^(?:left|right)_", "", name) in aliases
         ),
         None,
+    )
+
+
+def infer_view(evidence: list[tuple[str, float]]) -> tuple[ViewName, float]:
+    confidences: dict[str, float] = {}
+    for label, confidence in evidence:
+        label = _normalise(label)
+        confidences[label] = max(confidences.get(label, 0), confidence)
+    scores = {
+        view: sum(
+            max((confidences.get(label, 0) for label in family), default=0)
+            for family in families
+        )
+        for view, families in VIEW_FAMILIES.items()
+    }
+
+    def winner(first: ViewName, second: ViewName) -> tuple[ViewName, float, float]:
+        selected, other = (
+            (first, second) if scores[first] >= scores[second] else (second, first)
+        )
+        total = scores[selected] + scores[other]
+        confidence = scores[selected] / total if total else 0
+        return selected, scores[selected], confidence
+
+    face, face_score, face_confidence = winner("front", "rear")
+    side, side_score, side_confidence = winner("left", "right")
+    face_valid = (
+        face_score >= MIN_VIEW_SCORE
+        and face_confidence >= MIN_VIEW_CONFIDENCE
+    )
+    side_valid = (
+        side_score >= MIN_VIEW_SCORE
+        and side_confidence >= MIN_VIEW_CONFIDENCE
+    )
+    if face_valid and (
+        not side_valid or face_score >= side_score * FACE_TO_SIDE_RATIO
+    ):
+        return face, round(face_confidence, 4)
+    if side_valid:
+        return side, round(side_confidence, 4)
+    raise PipelineError(
+        "ambiguous_view",
+        "Could not determine the car view confidently; choose front, rear, left, or right",
     )
 
 
@@ -173,8 +251,8 @@ def validate_view(view: ViewName, parts: list[PartDetection]) -> None:
 
 
 def detect_car_and_parts(
-    image: Image.Image, settings: Settings, view: ViewName
-) -> tuple[CarDetection, list[PartDetection]]:
+    image: Image.Image, settings: Settings, view: ViewSelection
+) -> tuple[CarDetection, list[PartDetection], ViewName, float | None]:
     try:
         with _YOLO_LOCK:
             model = _load_model(
@@ -214,6 +292,7 @@ def detect_car_and_parts(
     crop = image.crop(car.box)
     parts = []
     doors = []
+    view_evidence = []
 
     try:
         with _YOLO_LOCK:
@@ -245,7 +324,7 @@ def detect_car_and_parts(
             polygons,
         ):
             class_name = _normalise(specialised_result.names[int(class_id)])
-            group = _part_group(class_name, view)
+            group = _part_group(class_name)
             x1, y1, x2, y2 = (
                 max(car_x1, min(car_x2, car_x1 + float(xyxy[0]))),
                 max(car_y1, min(car_y2, car_y1 + float(xyxy[1]))),
@@ -254,6 +333,8 @@ def detect_car_and_parts(
             )
             area = (x2 - x1) * (y2 - y1)
             area_limit = 0.7 if group == "bumper" else MAX_PART_AREA_RATIO
+            if x2 > x1 and y2 > y1 and area <= car.area * area_limit:
+                view_evidence.append((class_name, float(confidence)))
             if (
                 class_name.endswith("_door")
                 and x2 > x1
@@ -293,6 +374,10 @@ def detect_car_and_parts(
                     )
                 )
 
+    resolved_view, view_confidence = (
+        infer_view(view_evidence) if view == "auto" else (view, None)
+    )
+
     try:
         with _YOLO_LOCK:
             model = _load_model(
@@ -315,7 +400,7 @@ def detect_car_and_parts(
             part_result.boxes.conf.cpu().tolist(),
             part_result.boxes.cls.cpu().tolist(),
         ):
-            group = _part_group(part_result.names[int(class_id)], view)
+            group = _part_group(part_result.names[int(class_id)], resolved_view)
             x1, y1, x2, y2 = (
                 max(car_x1, min(car_x2, car_x1 + float(xyxy[0]))),
                 max(car_y1, min(car_y2, car_y1 + float(xyxy[1]))),
@@ -333,8 +418,9 @@ def detect_car_and_parts(
                     PartDetection(group, (x1, y1, x2, y2), float(confidence))
                 )
     parts = _deduplicate(parts)
-    validate_view(view, parts)
-    if view in {"front", "rear"} and not any(
+    if view != "auto":
+        validate_view(resolved_view, parts)
+    if resolved_view in {"front", "rear"} and not any(
         part.group == "windows" for part in parts
     ):
         width, height = car_x2 - car_x1, car_y2 - car_y1
@@ -351,6 +437,5 @@ def detect_car_and_parts(
                 0,
             )
         )
-    if view in {"left", "right"}:
-        parts = _with_side_window_prompts(parts, doors)
-    return car, parts
+    parts = _with_side_window_prompts(parts, doors)
+    return car, parts, resolved_view, view_confidence

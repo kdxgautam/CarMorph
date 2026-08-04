@@ -41,11 +41,12 @@ from app.schemas import (
     BoundingBox,
     PaintabilityReport,
     ViewName,
+    ViewSelection,
 )
 
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"28"
+PIPELINE_VERSION = b"30"
 PAINT_ANALYSIS_VERSION = "paint-groups-v12"
 
 PAINT_GROUP_FILENAMES = {
@@ -65,7 +66,7 @@ PAINT_GROUP_FILENAMES = {
 }
 
 
-def _asset_id(source: bytes, view: ViewName) -> str:
+def _asset_id(source: bytes, view: ViewSelection) -> str:
     return hashlib.sha256(
         PIPELINE_VERSION + b"\0" + view.encode() + b"\0" + source
     ).hexdigest()
@@ -130,7 +131,9 @@ def _read_result(metadata: Path) -> AssetBundle:
     return result
 
 
-def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBundle:
+def process_view(
+    source: bytes, settings: Settings, view: ViewSelection
+) -> AssetBundle:
     asset_id = _asset_id(source, view)
     final = settings.storage_root / asset_id
 
@@ -147,12 +150,14 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
         work = Path(tempfile.mkdtemp(dir=settings.storage_root))
         try:
             image_jpeg = encode_jpeg(image)
-            car, parts = detect_car_and_parts(image, settings, view)
+            car, parts, resolved_view, view_confidence = detect_car_and_parts(
+                image, settings, view
+            )
             grouped_parts = defaultdict(list)
             for part in parts:
                 grouped_parts[part.group].append(part)
 
-            required_parts = REQUIRED_PART_GROUPS_BY_VIEW[view]
+            required_parts = REQUIRED_PART_GROUPS_BY_VIEW[resolved_view]
             missing = sorted(required_parts - grouped_parts.keys())
             if missing:
                 raise PipelineError(
@@ -213,7 +218,7 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                     )
 
             if settings.roboflow_segmenter == "hybrid":
-                semantic_groups = _hybrid_semantic_groups(view)
+                semantic_groups = _hybrid_semantic_groups(resolved_view)
                 semantic_masks = segment_concepts(
                     image_jpeg, list(semantic_groups.values()), settings
                 )
@@ -252,7 +257,7 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
                     502,
                 )
 
-            if view in {"left", "right"}:
+            if "windows" in part_masks:
                 part_masks["windows"] = _refine_side_windows(
                     part_masks["windows"],
                     part_masks.get("mirrors"),
@@ -267,7 +272,7 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
             )
             absent_output_masks = sorted(OUTPUT_PART_GROUPS - part_masks.keys())
             missing_expected_masks = sorted(
-                EXPECTED_PROTECTIVE_PART_GROUPS_BY_VIEW[view]
+                EXPECTED_PROTECTIVE_PART_GROUPS_BY_VIEW[resolved_view]
                 - part_masks.keys()
             )
             for group in absent_output_masks:
@@ -399,7 +404,9 @@ def process_view(source: bytes, settings: Settings, view: ViewName) -> AssetBund
             )
             result = AssetBundle(
                 asset_id=asset_id,
-                view=view,
+                view=resolved_view,
+                requested_view=view,
+                view_confidence=view_confidence,
                 width=image.width,
                 height=image.height,
                 car_bbox=BoundingBox(

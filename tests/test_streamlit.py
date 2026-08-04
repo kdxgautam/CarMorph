@@ -14,6 +14,7 @@ class StreamlitTest(unittest.TestCase):
         self.assertEqual(app.title[0].value, "Car Paint Studio")
         self.assertEqual(len(app.tabs), 2)
         self.assertTrue(app.button[0].disabled)
+        self.assertEqual(app.selectbox[0].value, "auto")
 
 
 if __name__ == "__main__":
