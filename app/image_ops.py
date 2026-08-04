@@ -348,7 +348,7 @@ def recolour(
     if source_chroma > 8:
         source_direction = source_base / source_chroma
         projection = np.sum(source_ab * source_direction, axis=2)
-        paint_strength = np.clip(projection / source_chroma, 0, 1.25)
+        paint_strength = np.clip(projection / source_chroma, 0.65, 1.25)
         reflection = source_ab - projection[:, :, None] * source_direction
     else:
         paint_strength = np.ones_like(lightness)

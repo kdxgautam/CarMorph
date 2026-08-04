@@ -202,6 +202,27 @@ class PipelineTest(unittest.TestCase):
         self.assertLess(float(base[1]), 0)
         self.assertGreater(float(np.linalg.norm(reflected - base)), 3)
 
+    def test_recolour_keeps_target_chroma_in_desaturated_shadows(self) -> None:
+        lab = np.empty((50, 80, 3), np.float32)
+        lab[:] = (45, 3, -28)
+        lab[:, 40:] = (24, 0, -3)
+        source = np.rint(
+            np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2RGB), 0, 1) * 255
+        ).astype(np.uint8)
+        result = np.asarray(
+            Image.open(
+                BytesIO(
+                    recolour(
+                        Image.fromarray(source),
+                        np.full((50, 80), 255, np.uint8),
+                        "634718",
+                    )
+                )
+            ).convert("RGB")
+        )
+        result_lab = cv2.cvtColor(result.astype(np.float32) / 255, cv2.COLOR_RGB2LAB)
+        self.assertGreater(float(np.median(result_lab[:, 50:, 2])), 8)
+
     def test_metallic_recolour_does_not_invent_periodic_shimmer(self) -> None:
         source = Image.new("RGB", (70, 70), (150, 40, 30))
         result = np.asarray(

@@ -494,6 +494,27 @@ def analyse_paint_groups(
             )
         )
 
+    dominant_hue = profile.dominant_hsv[0] if profile.dominant_hsv else 0
+    if not (dominant_hue <= 35 or dominant_hue >= 325):
+        contrast_lens = (
+            (full_car >= 128)
+            & ~claimed
+            & (hsv[:, :, 1] >= 140)
+            & ((hsv[:, :, 0] <= 25) | (hsv[:, :, 0] >= 170))
+        )
+        lens_regions = np.zeros(shape, bool)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(
+            np.where(contrast_lens, 255, 0).astype(np.uint8)
+        )
+        for index in range(1, count):
+            area = stats[index, cv2.CC_STAT_AREA]
+            if 20 <= area <= car_pixels * 0.02:
+                lens_regions |= labels == index
+        add(
+            PaintGroup.LIGHT_LENS,
+            np.where(lens_regions, 255, 0).astype(np.uint8),
+        )
+
     bumper = part_masks.get("bumper")
     if bumper is not None:
         bumper_candidate = bumper.copy()
@@ -535,7 +556,19 @@ def analyse_paint_groups(
             PaintGroup.PAINTED_BUMPER_SECTION,
             np.where(painted_bumper, 255, 0).astype(np.uint8),
         )
-        add(PaintGroup.BLACK_PLASTIC_TRIM, bumper)
+        bumper_plastic = (
+            (bumper >= 128)
+            & (grey < 80)
+            & (hsv[:, :, 1] < 85)
+            & (
+                chroma_distance(lab, profile_lab)
+                > settings.body_growth_chroma_threshold
+            )
+        )
+        add(
+            PaintGroup.BLACK_PLASTIC_TRIM,
+            np.where(bumper_plastic, 255, 0).astype(np.uint8),
+        )
 
     residual = (full_car >= 128) & ~claimed
     hard_protected = union_group_masks(

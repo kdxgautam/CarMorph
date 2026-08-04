@@ -282,6 +282,37 @@ class PaintAnalysisTest(unittest.TestCase):
         )
         self.assertIn(PaintGroup.CONTRASTING_MIRROR_CAP, contrasting.group_masks)
 
+    def test_low_chroma_painted_bumper_is_not_assumed_to_be_plastic(self) -> None:
+        pixels = np.full((80, 100, 3), (60, 78, 98), np.uint8)
+        bumper = rectangle((80, 100), (10, 55, 90, 75))
+        trim = rectangle((80, 100), (35, 65, 65, 72))
+        pixels[trim > 0] = (15, 15, 15)
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((80, 100), 255, np.uint8),
+            {"bumper": bumper, "trim": trim},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.editable[60, 20], 255)
+        self.assertEqual(result.masks.protected[68, 50], 255)
+
+    def test_undetected_contrast_side_marker_remains_protected(self) -> None:
+        pixels = np.full((80, 100, 3), (60, 78, 98), np.uint8)
+        marker = rectangle((80, 100), (15, 45, 20, 65))
+        pixels[marker > 0] = (235, 85, 10)
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            np.full((80, 100), 255, np.uint8),
+            {},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.protected[55, 17], 255)
+        self.assertEqual(result.masks.editable[55, 17], 0)
+
     def test_body_coloured_roof_strip_is_separated_from_rear_glass(self) -> None:
         pixels = np.full((80, 100, 3), (180, 35, 30), np.uint8)
         roof = rectangle((80, 100), (20, 5, 80, 35))
