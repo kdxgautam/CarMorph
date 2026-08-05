@@ -15,5 +15,4 @@ weights/
 .env
 evaluation/
 
-ppp-wheel.json
 google-service.json
