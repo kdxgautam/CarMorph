@@ -51,7 +51,6 @@ with single_tab:
                         modification=SurfaceEditRequest(
                             body_colour=colour,
                             finish=finish,
-                            renderer="deterministic",
                         ),
                     )
                     rendered = Path(result.path).read_bytes()
