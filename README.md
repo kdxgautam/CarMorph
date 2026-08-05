@@ -2,16 +2,15 @@
 
 Backend-only car paint customisation API. It uploads one car photograph,
 segments reusable masks once, previews deterministic body recolours, and can
-render controlled surface edits such as finish changes and simple racing
-stripes while restoring original pixels outside editable paint.
+render controlled body or roof colour edits while restoring original pixels
+outside editable paint.
 
 For a guided code tour, processing flow, stored-asset anatomy, and debugging
 checklist, see [PROJECT_GUIDE.md](PROJECT_GUIDE.md).
 
 This project is not production-ready. The current car-parts weights are
-AGPL-3.0, FLUX.1 Kontext dev is not a production-commercial model, the public
-Hugging Face Space is development-only, and process-local locks are not
-suitable for multi-worker production deployment.
+AGPL-3.0 and process-local locks are not suitable for multi-worker production
+deployment.
 
 ## Architecture
 
@@ -34,12 +33,6 @@ suitable for multi-worker production deployment.
    the editable mask for new assets.
 8. Deterministic rendering uses the selected mask for body colour plus glossy,
    matte, or metallic approximations.
-9. Generative rendering builds prompts only from validated structured requests,
-   calls the FLUX provider, composites through the request-specific mask, and
-   restores every pixel outside it.
-
-Natural-language instructions are parsed by a restricted local parser. Raw user
-instructions are not sent directly to FLUX.
 
 ## Requirements
 
@@ -47,7 +40,6 @@ instructions are not sent directly to FLUX.
 - `curl`
 - `jq`
 - A Roboflow API key
-- A Hugging Face read token with the FLUX.1 Kontext dev terms accepted
 
 ```bash
 python3.12 -m venv .venv
@@ -75,8 +67,8 @@ Create local configuration from `.env.example`:
 cp .env.example .env
 ```
 
-Set `ROBOFLOW_API_KEY` and `HF_TOKEN` in `.env`. `.env`, uploaded images,
-processed assets, and model weights are ignored by Git.
+Set `ROBOFLOW_API_KEY` in `.env`. `.env`, uploaded images, processed assets,
+and model weights are ignored by Git.
 
 ## Start the API
 
@@ -108,14 +100,13 @@ streamlit run streamlit_app.py
 | `GET` | `/cars/{asset_id}` | Read stored metadata |
 | `GET` | `/cars/{asset_id}/assets/{path}` | Download original image or masks |
 | `GET` | `/cars/{asset_id}/preview?colour=2563eb` | Backward-compatible deterministic recolour |
-| `POST` | `/cars/{asset_id}/render?colour=2563eb` | Backward-compatible cached FLUX colour render |
 | `POST` | `/cars/{asset_id}/customise` | Controlled surface customisation PNG render |
 
 `/customise` returns:
 
 ```text
 X-Render-Cached: true|false
-X-Renderer-Used: deterministic|generative
+X-Renderer-Used: deterministic
 X-Quality-Status: passed|passed_with_warnings|failed
 ```
 
@@ -127,7 +118,7 @@ Plain colour:
 curl -sS --fail-with-body \
   -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
   -H 'Content-Type: application/json' \
-  -d '{"type":"surface_edit","body_colour":"#183A63","finish":"glossy","design_elements":[],"custom_instruction":null,"renderer":"auto"}' \
+  -d '{"type":"surface_edit","body_colour":"#183A63","finish":"glossy"}' \
   -o /tmp/car-plain.png
 ```
 
@@ -147,41 +138,9 @@ Matte finish:
 curl -sS --fail-with-body \
   -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
   -H 'Content-Type: application/json' \
-  -d '{"type":"surface_edit","body_colour":"#111111","finish":"matte","design_elements":[],"custom_instruction":null,"renderer":"auto"}' \
+  -d '{"type":"surface_edit","body_colour":"#111111","finish":"matte"}' \
   -o /tmp/car-matte.png
 ```
-
-Dual racing stripes:
-
-```bash
-curl -sS --fail-with-body \
-  -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"surface_edit","body_colour":"#183A63","finish":"metallic","design_elements":[{"type":"racing_stripes","count":2,"colour":"#D61F2C","width":"thin","placement":"bonnet_and_visible_roof","alignment":"centre"}],"custom_instruction":null,"renderer":"auto"}' \
-  -o /tmp/car-stripes.png
-```
-
-Natural-language instruction:
-
-```bash
-curl -sS --fail-with-body \
-  -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"surface_edit","custom_instruction":"Use metallic blue with one white stripe.","renderer":"auto"}' \
-  -o /tmp/car-natural-language.png
-```
-
-Rejected bumper instruction:
-
-```bash
-curl -sS --fail-with-body \
-  -X POST "http://127.0.0.1:8000/cars/${ASSET_ID}/customise" \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"surface_edit","custom_instruction":"Replace the bumper.","renderer":"auto"}'
-```
-
-The last command returns an error envelope with
-`future_physical_modification`.
 
 The Streamlit interface defaults to automatic view detection. The API keeps
 `front` as its backward-compatible default and accepts `auto`, `front`, `rear`,
@@ -192,27 +151,14 @@ and require an explicit view.
 
 - Body colour: six-digit RGB hex colours
 - Finish: `glossy`, `matte`, `metallic`
-- Racing stripes: count `1` or `2`; width `thin`, `medium`, `thick`; placement
-  `bonnet`, `visible_roof`, `bonnet_and_visible_roof`, or
-  `visible_side_panels`
-- Restricted instructions such as `Make the car matte black` or
-  `Use metallic blue with one white stripe`
+- Optional contrast roof colour when that paint group is available
 
 Unsupported in this milestone:
 
-- Rim, wheel, tyre, bumper, spoiler, suspension, convertible, body-kit, 3D,
-  GLB, and geometry-changing modifications
+- Racing stripes, natural-language edits, rim/wheel/tyre/bumper/spoiler,
+  suspension, convertible, body-kit, 3D, GLB, and geometry-changing
+  modifications
 - Arbitrary geometry fields in JSON
-- Unchecked free-form FLUX prompts
-
-## Renderer selection
-
-- Plain colour plus finish defaults to deterministic rendering.
-- Matte and metallic are deterministic approximations unless
-  `renderer:"generative"` is explicitly requested.
-- Racing stripes and custom instructions use generative rendering.
-- Physical modifications are rejected as future work.
-- Complex requests are not silently downgraded to plain recolouring.
 
 ## Paintability masks
 
@@ -342,8 +288,6 @@ data/processed/<asset_id>/
 │   ├── body-paint-anchor-overlay.png
 │   ├── surface-completion-overlay.png
 │   └── part masks...
-├── renders/
-│   └── flux-<colour>-<settings-hash>.png
 └── customisations/
     └── <request_hash>/
         ├── request.json
@@ -352,9 +296,9 @@ data/processed/<asset_id>/
 ```
 
 Upload caching remains content-addressed by image bytes, view, and pipeline
-version. Customisation cache keys include renderer version, provider/space,
-provider settings, normalized structured modification JSON, and mask/pipeline
-version. Equivalent JSON requests reuse the same cache entry.
+version. Customisation cache keys include renderer version, normalized
+structured modification JSON, and mask/pipeline version. Equivalent JSON
+requests reuse the same cache entry.
 
 ## Quality checks
 
@@ -364,7 +308,6 @@ Initial deterministic checks verify:
 - outside-editable pixels remain exact
 - protected pixels remain exact
 - editable region is non-empty
-- generated images are readable before compositing
 - paint groups do not overlap
 - protected and uncertain groups never overlap the default editable mask
 - body-coloured handles follow the default body request
@@ -378,7 +321,7 @@ These checks do not claim vehicle-identity AI validation.
 
 ## Test commands
 
-Local checks do not call Roboflow or Hugging Face:
+Local checks do not call Roboflow:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -386,7 +329,7 @@ python -m compileall -q app tests
 python -m pip check
 ```
 
-External Roboflow and FLUX calls are mocked or avoided in unit tests.
+External Roboflow calls are mocked or avoided in unit tests.
 
 ## Common errors
 
@@ -401,26 +344,7 @@ External Roboflow and FLUX calls are mocked or avoided in unit tests.
 | `invalid_sam_response` | SAM returned unusable mask data |
 | `mask_dimension_mismatch` | An image and mask have incompatible dimensions |
 | `invalid_modification` | Customisation JSON failed validation |
-| `future_physical_modification` | Natural language asked for a physical change |
-| `future_not_supported` | Structured request targets a future renderer |
-| `unsupported_instruction` | Natural language did not match safe surface edits |
-| `renderer_not_supported` | Explicit renderer cannot handle the request |
-| `flux_unavailable` | The FLUX Space is unavailable, queued, or out of quota |
-| `invalid_flux_response` | FLUX returned an invalid file or response |
 | `quality_check_failed` | Final composite failed deterministic quality checks |
-
-## Future part replacement
-
-Interfaces reserve a later physical-part pipeline:
-
-```text
-Original image
-+ target-part mask
-+ protected neighbouring masks
-+ compatible reference asset
-+ geometry/fitment constraints
--> part-replacement renderer
-```
 
 Useful masks and metadata are retained for wheels, tyres grouped with wheels,
 bumper, mirrors, lights, grille, number plate, trim, and windows. This

@@ -147,6 +147,12 @@ appearance statistics to distinguish probable paint, chrome, and dark plastic.
 `paint_group_classifier.py` then assigns disjoint paint groups. Its internal
 `claimed` mask makes the first, strongest decision win.
 
+Warm colour alone is not enough to protect a pixel as a light. Missed
+red/orange lens recovery is limited to plausible light areas: near detected
+light masks or near the front/rear ends of the detected car. This prevents
+yellow or orange body paint, especially upper side strips, from being frozen as
+`light_lens`.
+
 ### 3. Surface completion
 
 Strict paint-compatible pixels become seeds, not the final mask.
@@ -160,6 +166,11 @@ Strict paint-compatible pixels become seeds, not the final mask.
 
 Connected-region voting recovers panel shadows, highlights, thin edge strips,
 and reflection-shaped gaps without globally expanding into protected parts.
+After that, a small upper-body fallback can recover missed roof or shoulder
+paint when it strongly matches the body-paint profile and touches the recovered
+main body. This keeps body-coloured upper strips editable even when the roof or
+pillar detector misses them, while dark roofs, glass, trim, and true contrast
+roof paint remain outside the default body request.
 
 ### 4. Final masks
 
@@ -186,16 +197,6 @@ new assets.
 
 `DeterministicSurfaceRenderer` loads the request-specific masks, applies body
 and optional roof colours, checks invariants, then writes the result atomically.
-
-## Generative rendering
-
-Generative rendering is optional. Structured requests become constrained
-prompts in `app/modifications/prompts.py`; raw user text is never passed through
-unchecked. Even after generation, the original image is restored outside the
-editable mask before quality checks run.
-
-Use deterministic rendering for plain body colour and finish changes. Use the
-generative path only for supported surface designs that require it.
 
 ## Stored asset layout
 
@@ -243,8 +244,8 @@ version.
 | `app/pipeline.py` | Processing orchestration, caching, persistence |
 | `app/image_ops.py` | Input validation, mask cleanup, LAB renderer |
 | `app/paint_analysis/` | Paint profile, materials, groups, surface completion |
-| `app/modifications/` | Request schemas, restricted parsing, renderer selection |
-| `app/renderers/` | Deterministic and generative render implementations |
+| `app/modifications/` | Deterministic request schemas |
+| `app/renderers/` | Deterministic render implementation |
 | `app/quality/` | Mask and rendered-pixel checks |
 | `app/main.py` | FastAPI routes and error envelopes |
 | `streamlit_app.py` | Interactive editor and evaluation gallery |
@@ -292,7 +293,7 @@ python -m compileall -q app streamlit_app.py tests
 python -m unittest discover -s tests -v
 ```
 
-At the time this guide was written, the suite contains 60 passing tests.
+At the time this guide was written, the suite contains 58 passing tests.
 
 ## Debugging checklist
 

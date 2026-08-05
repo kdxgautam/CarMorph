@@ -35,8 +35,8 @@ class AvailableModifications(BaseModel):
 
     body_colour: bool = True
     finish: bool = True
-    racing_stripes: bool = True
-    custom_instruction: bool = True
+    racing_stripes: bool = False
+    custom_instruction: bool = False
     roof_colour: bool = False
     rim_replacement: bool = False
     bumper_replacement: bool = False

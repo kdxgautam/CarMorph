@@ -468,6 +468,46 @@ class PaintAnalysisTest(unittest.TestCase):
         )
         self.assertFalse(np.any((result.masks.editable > 0) & (red_lens > 0)))
 
+    def test_warm_body_coloured_upper_strip_is_not_recovered_as_light_lens(self) -> None:
+        pixels = np.zeros((100, 160, 3), np.uint8)
+        full = rectangle((100, 160), (10, 10, 150, 85))
+        pixels[full > 0] = (225, 170, 20)
+        windows = rectangle((100, 160), (35, 25, 125, 45))
+        trim = rectangle((100, 160), (15, 70, 145, 82))
+        pixels[windows > 0] = (25, 35, 45)
+        pixels[trim > 0] = (15, 15, 15)
+        upper_strip = rectangle((100, 160), (40, 12, 120, 14))
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            full,
+            {"windows": windows, "trim": trim},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.editable[12, 80], 255)
+        light_lens = result.group_masks.get(PaintGroup.LIGHT_LENS, np.zeros_like(full))
+        self.assertFalse(np.any((light_lens > 0) & (upper_strip > 0)))
+
+    def test_small_warm_lens_recovery_stays_near_plausible_light_zones(self) -> None:
+        pixels = np.full((80, 160, 3), (60, 80, 180), np.uint8)
+        full = rectangle((80, 160), (10, 10, 150, 70))
+        pixels[full > 0] = (60, 80, 180)
+        red_lens = rectangle((80, 160), (130, 35, 138, 43))
+        pixels[red_lens > 0] = (220, 20, 20)
+        warm_centre = rectangle((80, 160), (74, 12, 82, 20))
+        pixels[warm_centre > 0] = (220, 80, 20)
+
+        result = analyse_paint_groups(
+            Image.fromarray(pixels),
+            full,
+            {},
+            SETTINGS,
+        )
+
+        self.assertEqual(result.masks.protected[38, 134], 255)
+        self.assertNotEqual(result.masks.protected[16, 78], 255)
+
     def test_dark_bumper_insert_does_not_follow_chromatic_body_colour(self) -> None:
         pixels = np.full((60, 100, 3), (180, 35, 30), np.uint8)
         bumper = rectangle((60, 100), (10, 25, 90, 55))

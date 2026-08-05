@@ -14,12 +14,10 @@ from PIL import Image
 
 from app.config import Settings
 from app.errors import PipelineError
-from app.flux import FluxSettings, render_flux
 from app.image_ops import recolour
-from app.modifications.instructions import merge_instruction
-from app.modifications.planner import choose_renderer
 from app.modifications.schemas import parse_modification
 from app.pipeline import process_view
+from app.renderers.deterministic import DeterministicSurfaceRenderer
 from app.schemas import AssetBundle, ViewSelection
 
 app = FastAPI(title="Car Customisation API", version="0.1.0")
@@ -136,39 +134,19 @@ def preview(
     )
 
 
-@app.post("/cars/{asset_id}/render")
-def render(
-    asset_id: str,
-    colour: Annotated[str, Query(description="Six-digit RGB hex colour")] = "e63946",
-) -> FileResponse:
-    """Return the backward-compatible cached FLUX colour render."""
-
-    directory, metadata = _asset(asset_id)
-    path, cached = render_flux(directory, metadata, colour, FluxSettings.from_env())
-    return FileResponse(
-        path,
-        media_type="image/png",
-        headers={
-            "Cache-Control": "no-store",
-            "X-Render-Cached": str(cached).lower(),
-        },
-    )
-
-
 @app.post("/cars/{asset_id}/customise")
 async def customise(asset_id: str, request: Request) -> FileResponse:
-    """Validate a structured edit, select a renderer, and return its PNG."""
+    """Validate a deterministic paint edit and return its PNG."""
 
     directory, metadata = _asset(asset_id)
     try:
         body = await request.json()
     except ValueError as exc:
         raise PipelineError("invalid_request", "Request body must be JSON") from exc
-    modification = merge_instruction(parse_modification(body))
-    result = choose_renderer(modification).render(
+    result = DeterministicSurfaceRenderer().render(
         directory=directory,
         metadata=metadata,
-        modification=modification,
+        modification=parse_modification(body),
     )
     return FileResponse(
         result.path,

@@ -66,6 +66,15 @@ def _relation(
     return max(0, 1 - chroma / max(threshold * 2, 1)), chroma, lightness
 
 
+def _car_bbox(mask: np.ndarray) -> tuple[int, int, int, int]:
+    """Return the bounding rectangle for a non-empty binary mask."""
+
+    ys, xs = np.where(mask >= 128)
+    if not len(xs):
+        return 0, 0, mask.shape[1], mask.shape[0]
+    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
 def analyse_paint_groups(
     image: Image.Image,
     full_car: np.ndarray,
@@ -82,6 +91,7 @@ def analyse_paint_groups(
 
     shape = full_car.shape
     car_pixels = max(1, int(np.count_nonzero(full_car >= 128)))
+    car_x1, car_y1, car_x2, car_y2 = _car_bbox(full_car)
     # Start profile estimation away from semantic parts. Dark-trim remains a
     # candidate because dark paint must not be rejected solely by brightness.
     known = [
@@ -517,15 +527,31 @@ def analyse_paint_groups(
             )
         )
 
-    # Recover small missed red/orange lenses or decals on non-red vehicles.
-    # Connected components reject isolated warm reflections in dark paint.
+    # Recover small missed red/orange lenses only where lights make geometric
+    # sense. Warm/yellow paint elsewhere belongs to body recovery, not protection.
     dominant_hue = profile.dominant_hsv[0] if profile.dominant_hsv else 0
     if not (dominant_hue <= 35 or dominant_hue >= 325):
+        lights = part_masks.get("lights")
+        near_lights = (
+            cv2.dilate(
+                np.where(lights >= 128, 255, 0).astype(np.uint8),
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41)),
+            )
+            >= 128
+            if lights is not None
+            else np.zeros(shape, bool)
+        )
+        xs = np.arange(shape[1])[None, :]
+        car_width = max(1, car_x2 - car_x1)
+        end_zones = (xs <= car_x1 + car_width * 0.18) | (
+            xs >= car_x2 - car_width * 0.18
+        )
         contrast_lens = (
             (full_car >= 128)
             & ~claimed
             & (hsv[:, :, 1] >= 140)
-            & ((hsv[:, :, 0] <= 25) | (hsv[:, :, 0] >= 170))
+            & ((hsv[:, :, 0] <= 12) | (hsv[:, :, 0] >= 170))
+            & (near_lights | end_zones)
         )
         lens_regions = np.zeros(shape, bool)
         count, labels, stats, _ = cv2.connectedComponentsWithStats(
@@ -658,6 +684,55 @@ def analyse_paint_groups(
                     paintability=Paintability.EDITABLE,
                     reason_codes=[
                         "pixelwise_main_body_chroma_match",
+                        "adjacent_main_body_region",
+                    ],
+                )
+            )
+
+        # Detector roof/pillar prompts can miss side-view shoulder paint. If an
+        # upper unclaimed component still matches the body profile and touches
+        # the recovered main body, treat it as body paint before secondary-paint
+        # fallback can freeze it.
+        upper_limit = car_y1 + max(1, round((car_y2 - car_y1) * 0.38))
+        upper_body = unclassified & (np.arange(shape[0])[:, None] <= upper_limit)
+        upper_compatible = upper_body & (
+            chroma_distance(lab, profile_lab)
+            <= settings.body_paint_chroma_threshold
+        )
+        upper_count, upper_labels, upper_stats, _ = cv2.connectedComponentsWithStats(
+            np.where(upper_compatible, 255, 0).astype(np.uint8)
+        )
+        near_main = cv2.dilate(
+            np.where(main, 255, 0).astype(np.uint8), adjacency_kernel
+        ) > 0
+        for index in range(1, upper_count):
+            component = upper_labels == index
+            if upper_stats[index, cv2.CC_STAT_AREA] < settings.body_fragment_min_area:
+                continue
+            if not np.any(component & near_main):
+                continue
+            component_mask = np.where(component, 255, 0).astype(np.uint8)
+            similarity, _, lightness = _relation(
+                lab,
+                component_mask,
+                profile_lab,
+                settings.body_paint_chroma_threshold,
+            )
+            add(PaintGroup.MAIN_BODY_PAINT, component_mask)
+            main |= component
+            unclassified &= ~component
+            regions.append(
+                RegionClassification(
+                    region_id=f"upper_body_compatible_region_{index}",
+                    part_type="body_region",
+                    paint_group=PaintGroup.MAIN_BODY_PAINT,
+                    material_type=MaterialType.PAINTED_SURFACE,
+                    body_colour_similarity=round(similarity, 4),
+                    lightness_difference=round(lightness, 3),
+                    confidence=round(similarity, 4),
+                    paintability=Paintability.EDITABLE,
+                    reason_codes=[
+                        "upper_body_profile_match",
                         "adjacent_main_body_region",
                     ],
                 )

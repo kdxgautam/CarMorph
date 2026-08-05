@@ -50,8 +50,8 @@ from app.schemas import (
 # and manual rollback modes never reuse incompatible masks.
 # ponytail: process-local lock; use a shared job/lock store when running workers.
 _PROCESS_LOCK = Lock()
-PIPELINE_VERSION = b"33"
-PAINT_ANALYSIS_VERSION = "paint-groups-v12"
+PIPELINE_VERSION = b"34"
+PAINT_ANALYSIS_VERSION = "paint-groups-v13"
 
 PAINT_GROUP_FILENAMES = {
     PaintGroup.MAIN_BODY_PAINT: "main-body-paint-mask.png",

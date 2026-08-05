@@ -33,11 +33,6 @@ class DeterministicSurfaceRenderer:
 
         if not modification.body_colour and not modification.roof_colour:
             raise PipelineError("invalid_modification", "A paint colour is required")
-        if modification.design_elements:
-            raise PipelineError(
-                "renderer_not_supported",
-                "Deterministic rendering does not support racing stripes yet",
-            )
 
         key = request_hash(
             modification,
