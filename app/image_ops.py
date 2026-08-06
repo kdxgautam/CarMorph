@@ -53,6 +53,29 @@ def load_image(data: bytes) -> tuple[Image.Image, str]:
     return image, FORMATS[image_format]
 
 
+def load_image_rgba(data: bytes) -> tuple[Image.Image, str]:
+    """Decode a safe still image while preserving useful source transparency."""
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(data), formats=list(FORMATS)) as opened:
+                if getattr(opened, "n_frames", 1) != 1:
+                    raise ValueError("Animated or multi-frame images are not supported")
+                opened.load()
+                image_format = opened.format
+                image = ImageOps.exif_transpose(opened).convert("RGBA")
+    except (Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
+        raise ValueError("Image has too many pixels") from exc
+    if image_format not in FORMATS:
+        raise ValueError("Only JPEG, PNG, and WebP images are supported")
+    if not (MIN_DIMENSION <= min(image.size) and max(image.size) <= MAX_DIMENSION):
+        raise ValueError(
+            f"Image dimensions must be between {MIN_DIMENSION} and {MAX_DIMENSION} pixels"
+        )
+    return image, FORMATS[image_format]
+
+
 def encode_jpeg(image: Image.Image) -> bytes:
     """Encode a normalized provider input without metadata."""
 

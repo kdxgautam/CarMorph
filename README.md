@@ -348,6 +348,20 @@ External Roboflow calls are mocked or avoided in unit tests.
 
 Useful masks and metadata are retained for wheels, tyres grouped with wheels,
 bumper, mirrors, lights, grille, number plate, trim, and windows. This
-milestone does not implement rim replacement, bumper replacement, spoilers,
-body kits, 3D models, GLB assets, 360-degree rendering, frontend applications,
-authentication, PostgreSQL, Redis, Celery, S3, or deployment infrastructure.
+milestone does not implement rim replacement, spoilers, body kits, 3D models,
+GLB assets, 360-degree rendering, authentication, PostgreSQL, Redis, Celery,
+S3, or deployment infrastructure.
+# Generative bumper previews
+
+Front and rear assets with a detected bumper support a visual-only bumper replacement preview. Configure Vertex AI with Application Default Credentials:
+
+```bash
+gcloud auth application-default login
+export GOOGLE_CLOUD_PROJECT="your-project"
+export GOOGLE_CLOUD_LOCATION="global"
+export GENERATIVE_IMAGE_PROVIDER="vertex-ai"
+export GENERATIVE_IMAGE_MODEL_ID="gemini-3.1-flash-image"
+export GENERATIVE_IMAGE_TIMEOUT_SECONDS="180"
+```
+
+Enable Vertex AI API and billing for the project. The preview uses Gemini 3.1 Flash Image and restores every pixel outside CarMorph's strict bumper mask locally; it does not establish physical bumper compatibility.

@@ -377,3 +377,50 @@ class Settings:
                 503,
             )
         return settings
+
+
+@dataclass(frozen=True)
+class GenerativeSettings:
+    """Small, independent Vertex AI configuration for bumper previews."""
+
+    project_id: str
+    location: str = "global"
+    provider: str = "vertex-ai"
+    model_id: str = "gemini-3.1-flash-image"
+    timeout_seconds: float = 180
+
+    @classmethod
+    def from_env(cls) -> "GenerativeSettings":
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
+        provider = os.getenv("GENERATIVE_IMAGE_PROVIDER", "vertex-ai").strip()
+        location = os.getenv("GOOGLE_CLOUD_LOCATION", "global").strip()
+        model_id = os.getenv(
+            "GENERATIVE_IMAGE_MODEL_ID", "gemini-3.1-flash-image"
+        ).strip()
+        try:
+            timeout_seconds = float(os.getenv("GENERATIVE_IMAGE_TIMEOUT_SECONDS", "180"))
+        except ValueError as exc:
+            raise PipelineError(
+                "generative_provider_not_configured",
+                "GENERATIVE_IMAGE_TIMEOUT_SECONDS must be numeric",
+                500,
+            ) from exc
+        if not project_id or provider != "vertex-ai" or not location or not model_id:
+            raise PipelineError(
+                "generative_provider_not_configured",
+                "Vertex AI generative image settings are incomplete",
+                500,
+            )
+        if any(any(character.isspace() for character in value) for value in (location, model_id)):
+            raise PipelineError(
+                "generative_provider_not_configured",
+                "Vertex AI location and model ID cannot contain whitespace",
+                500,
+            )
+        if timeout_seconds <= 0:
+            raise PipelineError(
+                "generative_provider_not_configured",
+                "GENERATIVE_IMAGE_TIMEOUT_SECONDS must be positive",
+                500,
+            )
+        return cls(project_id, location, provider, model_id, timeout_seconds)

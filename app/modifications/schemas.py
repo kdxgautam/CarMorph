@@ -3,9 +3,9 @@
 import json
 import re
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from app.errors import PipelineError
 
@@ -61,18 +61,60 @@ class SurfaceEditRequest(BaseModel):
         return self
 
 
-def parse_modification(data: object) -> SurfaceEditRequest:
+class BumperPosition(StrEnum):
+    """The only vehicle ends supported by the bumper preview MVP."""
+
+    FRONT = "front"
+    REAR = "rear"
+
+
+class BumperPaintMode(StrEnum):
+    """How the generated bumper's visible finish should be guided."""
+
+    MATCH_BODY = "match_body"
+    PRESERVE_REFERENCE = "preserve_reference"
+
+
+class BumperReplacementRequest(BaseModel):
+    """Validated, prompt-free request for a constrained bumper preview."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["bumper_replacement"] = "bumper_replacement"
+    bumper_position: BumperPosition
+    reference_asset_id: str
+    paint_mode: BumperPaintMode = BumperPaintMode.MATCH_BODY
+
+    @field_validator("reference_asset_id")
+    @classmethod
+    def validate_reference_asset_id(cls, value: str) -> str:
+        """Keep content-addressed references safely inside their asset directory."""
+
+        normalized = value.lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+            raise ValueError("Reference asset ID must be a SHA-256 identifier")
+        return normalized
+
+
+ModificationRequest = Annotated[
+    SurfaceEditRequest | BumperReplacementRequest,
+    Field(discriminator="type"),
+]
+_MODIFICATION_ADAPTER = TypeAdapter(ModificationRequest)
+
+
+def parse_modification(data: object) -> ModificationRequest:
     """Validate an untrusted JSON value and expose stable domain errors."""
 
     if not isinstance(data, dict):
         raise PipelineError("invalid_modification", "Request body must be an object")
     try:
-        return SurfaceEditRequest.model_validate(data)
+        return _MODIFICATION_ADAPTER.validate_python(data)
     except ValueError as exc:
         raise PipelineError("invalid_modification", str(exc)) from exc
 
 
-def normalised_request_json(modification: SurfaceEditRequest) -> str:
+def normalised_request_json(modification: ModificationRequest) -> str:
     """Serialize a request canonically for cache identity and audit files."""
 
     return json.dumps(

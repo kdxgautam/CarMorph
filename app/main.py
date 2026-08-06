@@ -12,12 +12,16 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from PIL import Image
 
-from app.config import Settings
+from app.bumper_analysis.reference_preprocessor import store_bumper_reference
+from app.bumper_analysis.schemas import BumperReferenceResponse
+from app.config import GenerativeSettings, Settings
 from app.errors import PipelineError
 from app.image_ops import recolour
-from app.modifications.schemas import parse_modification
+from app.generative.vertex_ai import vertex_provider
+from app.modifications.schemas import SurfaceEditRequest, parse_modification
 from app.pipeline import process_view
 from app.renderers.deterministic import DeterministicSurfaceRenderer
+from app.renderers.generative_bumper import GenerativeBumperRenderer
 from app.schemas import AssetBundle, ViewSelection
 
 app = FastAPI(title="Car Customisation API", version="0.1.0")
@@ -134,6 +138,27 @@ def preview(
     )
 
 
+@app.post("/cars/{asset_id}/bumper-references", response_model=BumperReferenceResponse, status_code=201)
+def upload_bumper_reference(
+    asset_id: str,
+    image: Annotated[UploadFile, File()],
+) -> BumperReferenceResponse:
+    """Store one validated bumper reference alongside a prepared car asset."""
+
+    directory, metadata = _asset(asset_id)
+    if metadata.view not in {"front", "rear"}:
+        raise PipelineError("unsupported_bumper_view", "Bumper replacement supports front and rear views only", 400)
+    source = image.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(source) > MAX_UPLOAD_BYTES or not source:
+        raise PipelineError("invalid_bumper_reference", "Reference image is empty or exceeds the 20 MB limit", 400)
+    return store_bumper_reference(
+        directory=directory,
+        metadata=metadata,
+        source=source,
+        settings=None,
+    )
+
+
 @app.post("/cars/{asset_id}/customise")
 async def customise(asset_id: str, request: Request) -> FileResponse:
     """Validate a deterministic paint edit and return its PNG."""
@@ -143,11 +168,15 @@ async def customise(asset_id: str, request: Request) -> FileResponse:
         body = await request.json()
     except ValueError as exc:
         raise PipelineError("invalid_request", "Request body must be JSON") from exc
-    result = DeterministicSurfaceRenderer().render(
-        directory=directory,
-        metadata=metadata,
-        modification=parse_modification(body),
-    )
+    modification = parse_modification(body)
+    if isinstance(modification, SurfaceEditRequest):
+        result = DeterministicSurfaceRenderer().render(
+            directory=directory, metadata=metadata, modification=modification
+        )
+    else:
+        result = GenerativeBumperRenderer(vertex_provider(GenerativeSettings.from_env())).render(
+            directory=directory, metadata=metadata, modification=modification
+        )
     return FileResponse(
         result.path,
         media_type="image/png",
@@ -156,5 +185,6 @@ async def customise(asset_id: str, request: Request) -> FileResponse:
             "X-Render-Cached": str(result.cached).lower(),
             "X-Renderer-Used": result.renderer,
             "X-Quality-Status": result.quality_status,
+            "X-Quality-Warnings": ",".join(result.warnings),
         },
     )

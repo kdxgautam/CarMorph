@@ -4,7 +4,7 @@ import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.modifications.schemas import SurfaceEditRequest, normalised_request_json
+from app.modifications.schemas import ModificationRequest, normalised_request_json
 
 RENDERER_CACHE_VERSION = "surface-render-2"
 
@@ -21,23 +21,28 @@ class RenderResult:
 
 
 def request_hash(
-    modification: SurfaceEditRequest,
+    modification: ModificationRequest,
     *,
     renderer: str,
     provider: str = "",
     settings: str = "",
     pipeline_version: str = "legacy",
+    reference_content_hash: str = "",
+    provider_model: str = "",
+    renderer_version: str = "",
 ) -> str:
     """Create a stable render cache key from request, provider, and versions."""
 
-    payload = "|".join(
-        [
-            RENDERER_CACHE_VERSION,
-            renderer,
-            provider,
-            settings,
-            pipeline_version,
-            normalised_request_json(modification),
-        ]
-    )
+    parts = [
+        RENDERER_CACHE_VERSION,
+        renderer,
+        provider,
+        settings,
+        pipeline_version,
+        normalised_request_json(modification),
+    ]
+    # Keep existing deterministic paint cache keys unchanged.
+    if reference_content_hash or provider_model or renderer_version:
+        parts.extend([reference_content_hash, provider_model, renderer_version])
+    payload = "|".join(parts)
     return hashlib.sha256(payload.encode()).hexdigest()[:16]

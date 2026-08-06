@@ -35,6 +35,7 @@ from app.paint_analysis.diagnostics import (
 )
 from app.paint_analysis.paint_group_classifier import analyse_paint_groups
 from app.paint_analysis.schemas import PaintGroup
+from app.bumper_analysis.mask_builder import bumper_replacement_available
 from app.quality.checks import check_paint_analysis
 from app.roboflow import segment_boxes, segment_concepts
 from app.schemas import (
@@ -142,7 +143,13 @@ def _read_result(metadata: Path) -> AssetBundle:
     }
     if any(not (metadata.parent / path).is_file() for path in expected):
         raise PipelineError("missing_masks", "A stored image or mask is missing", 500)
-    return result
+    return result.model_copy(
+        update={
+            "available_modifications": result.available_modifications.model_copy(
+                update={"bumper_replacement": bumper_replacement_available(metadata.parent, result)}
+            )
+        }
+    )
 
 
 def process_view(
@@ -472,7 +479,13 @@ def process_view(
                 body_paint_profile=analysis.report.body_paint_profile,
                 paint_group_report=analysis.report,
                 paint_analysis_version=PAINT_ANALYSIS_VERSION,
-                available_modifications=AvailableModifications(roof_colour=True),
+                available_modifications=AvailableModifications(
+                    roof_colour=True,
+                    bumper_replacement=bool(
+                        resolved_view in {"front", "rear"}
+                        and np.any(part_masks["bumper"] >= 128)
+                    ),
+                ),
                 pipeline_version=PIPELINE_VERSION.decode(),
             )
             (work / "metadata.json").write_text(
