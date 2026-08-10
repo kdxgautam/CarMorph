@@ -128,6 +128,25 @@ class BumperTest(unittest.TestCase):
                 final = np.asarray(image.convert("RGB"))
             self.assertTrue(np.array_equal(final[masks.allowed < 128], np.asarray(original)[masks.allowed < 128]))
 
+    def test_wide_bar_reference_is_placed_low_on_bumper(self):
+        original = Image.new("RGB", (256, 256), (100, 100, 100))
+        reference = Image.new("RGBA", (220, 40))
+        pixels = np.asarray(reference).copy()
+        pixels[10:30, 10:210] = (220, 220, 220, 255)
+        reference = Image.fromarray(pixels)
+        reference_mask = np.where(np.asarray(reference.getchannel("A")) > 0, 255, 0).astype(np.uint8)
+        target = mask((256, 256), (35, 150, 221, 225))
+        rough = create_rough_composite(
+            original=original,
+            reference_rgba=reference,
+            reference_mask=reference_mask,
+            target_core_mask=target,
+            allowed_mask=target,
+        )
+        changed = np.argwhere(np.any(np.asarray(rough) != np.asarray(original), axis=2))
+        self.assertGreaterEqual(int(changed[:, 0].min()), 187)
+        self.assertTrue(np.array_equal(np.asarray(rough)[target < 128], np.asarray(original)[target < 128]))
+
     def test_opaque_rear_reference_uses_rear_prompt(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

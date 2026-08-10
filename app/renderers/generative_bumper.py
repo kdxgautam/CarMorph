@@ -32,6 +32,7 @@ def build_bumper_prompt(request: BumperReplacementRequest) -> str:
     return (
         f"Replace only the masked {request.bumper_position} bumper. Image 1 is authoritative for the car, camera, lighting and protected content. "
         "Image 2 is authoritative for the bumper design. Image 3 is placement guidance. Image 4 is the only editable region. "
+        "If Image 2 is a slim bumper guard, bumper bar, protector, diffuser strip, or chrome cross bar, install it as an add-on across the lower bumper instead of replacing or reshaping the full bumper skin. "
         "Preserve the bumper's major silhouette, openings, splitter and visible design details while adapting perspective and reflections. "
         f"{paint} Keep lights, grille, number plate, wheels, tyres, bonnet or boot, windows, badges, unrelated body panels, background, proportions and camera viewpoint unchanged. "
         "Do not add text, logos, accessories, body-kit parts, or make physical compatibility claims. Output one edited image."
@@ -40,7 +41,7 @@ def build_bumper_prompt(request: BumperReplacementRequest) -> str:
 
 class GenerativeBumperRenderer:
     name = "generative-bumper"
-    version = "bumper-render-1"
+    version = "bumper-render-2"
 
     def __init__(self, provider: GenerativeImageEditProvider, *, minimum_core_change_ratio: float = 0.01) -> None:
         if not 0 <= minimum_core_change_ratio <= 1:

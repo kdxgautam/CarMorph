@@ -15,6 +15,10 @@ def _box(mask: np.ndarray) -> tuple[int, int, int, int]:
     return int(x1), int(y1), int(x2), int(y2)
 
 
+def _slim_bar(width: int, height: int) -> bool:
+    return width / max(height, 1) >= 4
+
+
 def create_rough_composite(*, original: Image.Image, reference_rgba: Image.Image, reference_mask: np.ndarray, target_core_mask: np.ndarray, allowed_mask: np.ndarray) -> Image.Image:
     """Centre an aspect-preserving bumper crop and clamp it to allowed pixels."""
 
@@ -30,7 +34,9 @@ def create_rough_composite(*, original: Image.Image, reference_rgba: Image.Image
     size = (max(1, round(crop.width * scale)), max(1, round(crop.height * scale)))
     crop = crop.resize(size, Image.Resampling.LANCZOS)
     x = tx1 + (tx2 - tx1 - crop.width) // 2
-    y = ty1 + (ty2 - ty1 - crop.height) // 2
+    target_height = ty2 - ty1
+    y_offset = (target_height - crop.height) * (0.75 if _slim_bar(crop.width, crop.height) else 0.5)
+    y = ty1 + round(y_offset)
     overlay = Image.new("RGBA", original.size)
     overlay.alpha_composite(crop, (x, y))
     alpha = np.asarray(overlay.getchannel("A")).copy()
