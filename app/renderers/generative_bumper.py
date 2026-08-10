@@ -33,6 +33,7 @@ def build_bumper_prompt(request: BumperReplacementRequest) -> str:
         f"Replace only the masked {request.bumper_position} bumper. Image 1 is authoritative for the car, camera, lighting and protected content. "
         "Image 2 is authoritative for the bumper design. Image 3 is placement guidance. Image 4 is the only editable region. "
         "If Image 2 is a slim bumper guard, bumper bar, protector, diffuser strip, or chrome cross bar, install it as an add-on across the lower bumper instead of replacing or reshaping the full bumper skin. "
+        "For slim add-on bars, reproduce only the supplied bar shape and materials; do not invent centre pads, red reflectors, extra end caps, chrome extensions, diffuser details, accessory trim, or styling not visible in Image 2. "
         "Preserve the bumper's major silhouette, openings, splitter and visible design details while adapting perspective and reflections. "
         f"{paint} Keep lights, grille, number plate, wheels, tyres, bonnet or boot, windows, badges, unrelated body panels, background, proportions and camera viewpoint unchanged. "
         "Do not add text, logos, accessories, body-kit parts, or make physical compatibility claims. Output one edited image."
@@ -41,7 +42,7 @@ def build_bumper_prompt(request: BumperReplacementRequest) -> str:
 
 class GenerativeBumperRenderer:
     name = "generative-bumper"
-    version = "bumper-render-2"
+    version = "bumper-render-3"
 
     def __init__(self, provider: GenerativeImageEditProvider, *, minimum_core_change_ratio: float = 0.01) -> None:
         if not 0 <= minimum_core_change_ratio <= 1:
@@ -116,16 +117,28 @@ class GenerativeBumperRenderer:
             raise PipelineError("bumper_reference_not_found", "Bumper reference is unreadable", 404) from exc
         masks = build_bumper_masks(directory, metadata)
         rough = create_rough_composite(original=original, reference_rgba=reference, reference_mask=reference_mask, target_core_mask=masks.core, allowed_mask=masks.allowed)
+        edit_mask = masks.allowed
+        reference_points = np.argwhere(reference_mask >= 128)
+        if len(reference_points):
+            ry1, rx1 = reference_points.min(axis=0)
+            ry2, rx2 = reference_points.max(axis=0) + 1
+            if (rx2 - rx1) / max(ry2 - ry1, 1) >= 4:
+                guidance = np.any(np.asarray(rough) != np.asarray(original), axis=2)
+                radius = max(3, min(12, round(min(metadata.width, metadata.height) * 0.01)))
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
+                edit_mask = np.where((cv2.dilate(guidance.astype(np.uint8), kernel) > 0) & (masks.allowed >= 128), 255, 0).astype(np.uint8)
+                if not np.any(edit_mask):
+                    edit_mask = masks.allowed
         prompt = build_bumper_prompt(modification)
-        generated = self.provider.edit(original=original, reference=reference, rough_composite=rough, edit_mask=masks.allowed, instruction=prompt)
+        generated = self.provider.edit(original=original, reference=reference, rough_composite=rough, edit_mask=edit_mask, instruction=prompt)
         if generated.size != original.size:
             raise PipelineError("invalid_generated_image", "Generated image dimensions do not match the original", 502)
         source_pixels = np.asarray(original).copy()
         final_pixels = np.asarray(generated.convert("RGB")).copy()
-        final_pixels[masks.allowed < 128] = source_pixels[masks.allowed < 128]
+        final_pixels[edit_mask < 128] = source_pixels[edit_mask < 128]
         final_pixels[masks.protected >= 128] = source_pixels[masks.protected >= 128]
         result = Image.fromarray(final_pixels)
-        quality = check_bumper_render(original=original, generated=generated, result=result, core_mask=masks.core, allowed_mask=masks.allowed, protected_mask=masks.protected, minimum_core_change_ratio=self.minimum_core_change_ratio)
+        quality = check_bumper_render(original=original, generated=generated, result=result, core_mask=masks.core, allowed_mask=edit_mask, protected_mask=masks.protected, minimum_core_change_ratio=self.minimum_core_change_ratio)
         if quality.status == QualityStatus.FAILED:
             raise PipelineError("bumper_quality_check_failed", ", ".join(quality.warnings), 502)
         output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -136,7 +149,7 @@ class GenerativeBumperRenderer:
             (work / "provider.json").write_text(json.dumps({"provider": self.provider.name, "model_id": self.provider.model_id, "renderer_version": self.version}, indent=2), encoding="utf-8")
             (work / "prompt.txt").write_text(prompt, encoding="utf-8")
             rough.save(work / "rough-composite.png")
-            for name, mask in (("bumper-core-mask.png", masks.core), ("bumper-blend-mask.png", masks.blend), ("bumper-allowed-edit-mask.png", masks.allowed), ("bumper-protected-mask.png", masks.protected)):
+            for name, mask in (("bumper-core-mask.png", masks.core), ("bumper-blend-mask.png", masks.blend), ("bumper-allowed-edit-mask.png", edit_mask), ("bumper-protected-mask.png", masks.protected)):
                 if not cv2.imwrite(str(work / name), mask):
                     raise OSError(f"Could not persist {name}")
             result.save(work / "result.png")

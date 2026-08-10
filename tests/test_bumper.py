@@ -147,6 +147,33 @@ class BumperTest(unittest.TestCase):
         self.assertGreaterEqual(int(changed[:, 0].min()), 187)
         self.assertTrue(np.array_equal(np.asarray(rough)[target < 128], np.asarray(original)[target < 128]))
 
+    def test_slim_bar_renderer_uses_tight_edit_mask(self):
+        class CapturingProvider(MockGenerativeImageEditProvider):
+            edit_mask = None
+
+            def edit(self, **kwargs):
+                self.edit_mask = kwargs["edit_mask"].copy()
+                return super().edit(**kwargs)
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self.asset(root, "rear")
+            image = Image.new("RGBA", (256, 256))
+            pixels = np.asarray(image).copy()
+            pixels[105:125, 20:236] = (220, 220, 220, 255)
+            source = BytesIO()
+            Image.fromarray(pixels).save(source, "PNG")
+            reference = store_bumper_reference(directory=root, metadata=metadata, source=source.getvalue(), settings=None)
+            provider = CapturingProvider()
+            result = GenerativeBumperRenderer(provider).render(
+                directory=root,
+                metadata=metadata,
+                modification=BumperReplacementRequest(bumper_position="rear", reference_asset_id=reference.reference_asset_id),
+            )
+            masks = build_bumper_masks(root, metadata)
+            self.assertLess(np.count_nonzero(provider.edit_mask >= 128), np.count_nonzero(masks.allowed >= 128))
+            self.assertEqual(result.quality_status, "passed")
+
     def test_opaque_rear_reference_uses_rear_prompt(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
