@@ -22,9 +22,24 @@ def build_rim_prompt() -> str:
         "Replace only the visible wheel rims inside Image 4's white mask. "
         "Image 1 is authoritative for the car, tyres, lighting, viewpoint, and background. "
         "Image 2 is authoritative for rim design. Image 3 is placement guidance. "
-        "Preserve tyres, body panels, brakes hidden by the rim, shadows, windows, lights, plate, badges, and background. "
-        "Do not change tyre size, wheel position, suspension, body shape, or add text/logos. Output one edited image."
+        "Preserve the original wheel angle, tyre sidewall, tyre outer silhouette, wheel position, and perspective. "
+        "Preserve body panels, shadows, windows, lights, plate, badges, and background. "
+        "Do not turn, steer, rotate, resize, or move any wheel or tyre. Do not change suspension, body shape, or add text/logos. Output one edited image."
     )
+
+
+def _rim_edit_mask(wheels: np.ndarray) -> np.ndarray:
+    output = np.zeros_like(wheels)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(wheels)
+    for index in range(1, count):
+        x, y, width, height, area = stats[index]
+        if area < 20:
+            continue
+        radius = max(2, round(min(width, height) * 0.16))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
+        component = np.where(labels == index, 255, 0).astype(np.uint8)
+        output = np.maximum(output, cv2.erode(component, kernel))
+    return output if np.any(output >= 128) else wheels
 
 
 def _rough_rims(original: Image.Image, reference: Image.Image, reference_mask: np.ndarray, target: np.ndarray) -> Image.Image:
@@ -54,7 +69,7 @@ def _rough_rims(original: Image.Image, reference: Image.Image, reference_mask: n
 
 class GenerativeRimRenderer:
     name = "generative-rim"
-    version = "rim-render-1"
+    version = "rim-render-2"
 
     def __init__(self, provider: GenerativeImageEditProvider) -> None:
         self.provider = provider
@@ -82,7 +97,8 @@ class GenerativeRimRenderer:
                 raise OSError("missing rim mask")
         except OSError as exc:
             raise PipelineError("rim_reference_not_found", "Rim reference is unreadable", 404) from exc
-        mask = wheel_mask(directory, metadata)
+        wheels = wheel_mask(directory, metadata)
+        mask = _rim_edit_mask(wheels)
         rough = _rough_rims(original, reference, reference_mask, mask)
         generated = self.provider.edit(original=original, reference=reference, rough_composite=rough, edit_mask=mask, instruction=build_rim_prompt())
         if generated.size != original.size:

@@ -9,7 +9,7 @@ from PIL import Image
 
 from app.generative.mock import MockGenerativeImageEditProvider
 from app.modifications.schemas import RimReplacementRequest, parse_modification
-from app.renderers.generative_rim import GenerativeRimRenderer
+from app.renderers.generative_rim import GenerativeRimRenderer, _rim_edit_mask
 from app.rim_analysis import rim_replacement_available, store_rim_reference, wheel_mask
 from app.schemas import AssetBundle, BoundingBox
 
@@ -74,6 +74,9 @@ class RimTest(unittest.TestCase):
             wheels = wheel_mask(root, metadata)
             self.assertTrue(np.array_equal(final[wheels < 128], original[wheels < 128]))
             self.assertTrue(np.any(final[wheels >= 128] != original[wheels >= 128]))
+            rim_mask = _rim_edit_mask(wheels)
+            self.assertLess(np.count_nonzero(rim_mask), np.count_nonzero(wheels))
+            self.assertTrue(np.array_equal(final[(wheels >= 128) & (rim_mask < 128)], original[(wheels >= 128) & (rim_mask < 128)]))
 
     def test_front_view_with_wheels_is_supported(self):
         with TemporaryDirectory() as temporary:
