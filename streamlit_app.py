@@ -110,7 +110,7 @@ with single_tab:
                     st.error(f"{exc.detail} ({exc.code})")
         else:
             with st.container(border=True):
-                st.subheader("Bumper replacement")
+                st.subheader(f"{metadata.view.capitalize()} bumper replacement")
                 reference_upload = st.file_uploader(
                     "Reference bumper", type=("jpg", "jpeg", "png", "webp"), key="bumper_reference"
                 )

@@ -1,8 +1,10 @@
 import json
 import unittest
 from io import BytesIO
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -75,6 +77,12 @@ class BumperTest(unittest.TestCase):
         })
         self.assertIsInstance(request, BumperReplacementRequest)
         self.assertEqual(request.reference_asset_id, "a" * 64)
+        rear = parse_modification({
+            "type": "bumper_replacement",
+            "bumper_position": "rear",
+            "reference_asset_id": "b" * 64,
+        })
+        self.assertEqual(rear.bumper_position, "rear")
         with self.assertRaises(PipelineError):
             parse_modification({"type": "bumper_replacement", "bumper_position": "front", "reference_asset_id": "../x"})
 
@@ -119,6 +127,68 @@ class BumperTest(unittest.TestCase):
             with Image.open(result.path) as image:
                 final = np.asarray(image.convert("RGB"))
             self.assertTrue(np.array_equal(final[masks.allowed < 128], np.asarray(original)[masks.allowed < 128]))
+
+    def test_opaque_rear_reference_uses_rear_prompt(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self.asset(root, "rear")
+            source = BytesIO()
+            Image.new("RGB", (256, 256), (200, 200, 200)).save(source, "PNG")
+            polygon = [{
+                "points": [
+                    {"x": 40, "y": 80},
+                    {"x": 216, "y": 80},
+                    {"x": 216, "y": 176},
+                    {"x": 40, "y": 176},
+                ]
+            }]
+            with patch("app.bumper_analysis.reference_preprocessor.segment_concepts", return_value=[polygon]) as segment:
+                stored = store_bumper_reference(
+                    directory=root,
+                    metadata=metadata,
+                    source=source.getvalue(),
+                    settings=SimpleNamespace(mask_kernel_size=3),
+                )
+            self.assertEqual(stored.width, 256)
+            segment.assert_called_once()
+            self.assertEqual(segment.call_args.args[1], ["rear car bumper"])
+
+    def test_plain_background_reference_does_not_need_sam3(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self.asset(root, "rear")
+            image = Image.new("RGB", (256, 256), (255, 255, 255))
+            pixels = np.asarray(image).copy()
+            pixels[80:176, 32:224] = (25, 25, 25)
+            source = BytesIO()
+            Image.fromarray(pixels).save(source, "PNG")
+            with patch("app.bumper_analysis.reference_preprocessor.segment_concepts") as segment:
+                stored = store_bumper_reference(directory=root, metadata=metadata, source=source.getvalue(), settings=None)
+            segment.assert_not_called()
+            report = json.loads(
+                (root / "references" / "bumpers" / stored.reference_asset_id / "metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["segmentation_method"], "plain_background")
+
+    def test_rear_renderer_preserves_outside_and_protected_pixels(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self.asset(root, "rear")
+            reference = store_bumper_reference(directory=root, metadata=metadata, source=self.transparent_reference(), settings=None)
+            renderer = GenerativeBumperRenderer(MockGenerativeImageEditProvider())
+            request = BumperReplacementRequest(bumper_position="rear", reference_asset_id=reference.reference_asset_id)
+            result = renderer.render(directory=root, metadata=metadata, modification=request)
+            masks = build_bumper_masks(root, metadata)
+            original = np.asarray(Image.open(root / metadata.original_image).convert("RGB"))
+            final = np.asarray(Image.open(result.path).convert("RGB"))
+            self.assertTrue(np.array_equal(final[masks.allowed < 128], original[masks.allowed < 128]))
+            self.assertTrue(np.array_equal(final[masks.protected >= 128], original[masks.protected >= 128]))
+            with self.assertRaisesRegex(PipelineError, "match"):
+                renderer.render(
+                    directory=root,
+                    metadata=metadata,
+                    modification=BumperReplacementRequest(bumper_position="front", reference_asset_id=reference.reference_asset_id),
+                )
 
     def test_side_view_is_rejected(self):
         with TemporaryDirectory() as temporary:

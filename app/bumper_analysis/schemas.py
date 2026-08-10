@@ -20,7 +20,7 @@ class BumperReferenceReport(BaseModel):
     normalized_width: int
     normalized_height: int
     has_alpha: bool
-    segmentation_method: Literal["source_alpha", "sam3"]
+    segmentation_method: Literal["source_alpha", "plain_background", "sam3"]
     mask_coverage_ratio: float
     warnings: list[str] = Field(default_factory=list)
     processing_version: str

@@ -108,6 +108,10 @@ def polygons_to_mask(polygons: list, size: tuple[int, int]) -> np.ndarray:
 
     valid_polygons = 0
     for polygon in polygons:
+        if isinstance(polygon, dict):
+            polygon = polygon.get("points", polygon)
+        if isinstance(polygon, list) and polygon and isinstance(polygon[0], dict):
+            polygon = [[point.get("x"), point.get("y")] for point in polygon]
         try:
             points = np.asarray(polygon, dtype=np.float32)
         except (TypeError, ValueError):

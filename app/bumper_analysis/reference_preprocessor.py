@@ -35,6 +35,23 @@ def _largest_component(mask: np.ndarray) -> np.ndarray:
     return np.where(labels == index, 255, 0).astype(np.uint8)
 
 
+def _plain_background_mask(image: Image.Image) -> np.ndarray | None:
+    rgb = np.asarray(image.convert("RGB"), dtype=np.int16)
+    border = np.concatenate((rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]))
+    background = np.median(border, axis=0)
+    border_noise = float(np.percentile(np.linalg.norm(border - background, axis=1), 90))
+    if border_noise > 30:
+        return None
+    distance = np.linalg.norm(rgb - background, axis=2)
+    mask = np.where(distance > max(22, border_noise + 12), 255, 0).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = _largest_component(mask)
+    coverage = float(np.mean(mask >= 128))
+    return mask if 0.01 <= coverage <= 0.9 else None
+
+
 def _complete_reference(path: Path) -> BumperReferenceReport | None:
     try:
         report = BumperReferenceReport.model_validate_json(
@@ -93,25 +110,29 @@ def store_bumper_reference(
             mask = _largest_component(mask)
             method = "source_alpha"
         else:
-            try:
-                settings = settings or Settings.from_env()
-                polygons = segment_concepts(
-                    encode_jpeg(rgba.convert("RGB")),
-                    [f"{metadata.view} car bumper"],
-                    settings,
-                )[0]
-                mask = polygons_to_mask(polygons, rgba.size)
-                mask = clean_mask(mask, rgba.size, settings.mask_kernel_size, 0)
-                mask = _largest_component(np.where(mask >= 128, 255, 0).astype(np.uint8))
-            except PipelineError as exc:
-                if exc.code == "configuration_error":
-                    raise
-                raise PipelineError(
-                    "bumper_reference_segmentation_failed",
-                    "Could not isolate a usable bumper in the reference image",
-                    400,
-                ) from exc
-            method = "sam3"
+            mask = _plain_background_mask(rgba)
+            if mask is not None:
+                method = "plain_background"
+            else:
+                try:
+                    settings = settings or Settings.from_env()
+                    polygons = segment_concepts(
+                        encode_jpeg(rgba.convert("RGB")),
+                        [f"{metadata.view} car bumper"],
+                        settings,
+                    )[0]
+                    mask = polygons_to_mask(polygons, rgba.size)
+                    mask = clean_mask(mask, rgba.size, settings.mask_kernel_size, 0)
+                    mask = _largest_component(np.where(mask >= 128, 255, 0).astype(np.uint8))
+                except PipelineError as exc:
+                    if exc.code == "configuration_error":
+                        raise
+                    raise PipelineError(
+                        "bumper_reference_segmentation_failed",
+                        "Could not isolate a usable bumper in the reference image",
+                        400,
+                    ) from exc
+                method = "sam3"
             rgba.putalpha(Image.fromarray(mask))
         if not np.any(mask >= 128):
             raise PipelineError(
