@@ -13,7 +13,7 @@ from app.image_ops import recolour
 from app.modifications.schemas import SurfaceEditRequest, normalised_request_json
 from app.paint_analysis.mask_builder import load_request_masks
 from app.quality.checks import QualityStatus, check_render
-from app.renderers.base import RenderResult, request_hash
+from app.renderers.base import RenderResult, render_base_image, request_hash
 from app.schemas import AssetBundle
 
 
@@ -28,16 +28,21 @@ class DeterministicSurfaceRenderer:
         directory: Path,
         metadata: AssetBundle,
         modification: SurfaceEditRequest,
+        base_image: Image.Image | None = None,
     ) -> RenderResult:
         """Render body/roof colours, verify invariants, and atomically cache PNG."""
 
         if not modification.body_colour and not modification.roof_colour:
             raise PipelineError("invalid_modification", "A paint colour is required")
+        original, base_hash = render_base_image(
+            directory=directory, metadata=metadata, base_image=base_image
+        )
 
         key = request_hash(
             modification,
             renderer=self.name,
             pipeline_version=metadata.pipeline_version,
+            base_image_hash=base_hash,
         )
         output_dir = directory / "customisations" / key
         output = output_dir / "result.png"
@@ -46,8 +51,6 @@ class DeterministicSurfaceRenderer:
 
         protected_path = metadata.masks.get("protected_mask")
         try:
-            with Image.open(directory / metadata.original_image) as opened:
-                original = opened.convert("RGB")
             body_mask, roof_mask = load_request_masks(
                 directory, metadata, include_roof=bool(modification.roof_colour)
             )

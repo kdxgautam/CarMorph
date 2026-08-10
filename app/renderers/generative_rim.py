@@ -12,7 +12,7 @@ from PIL import Image
 from app.errors import PipelineError
 from app.generative.base import GenerativeImageEditProvider
 from app.modifications.schemas import RimReplacementRequest, normalised_request_json
-from app.renderers.base import RenderResult, request_hash
+from app.renderers.base import RenderResult, render_base_image, request_hash
 from app.rim_analysis import RIM_REFERENCE_VERSION, wheel_mask, wheel_reference
 from app.schemas import AssetBundle
 
@@ -35,7 +35,7 @@ def _rim_edit_mask(wheels: np.ndarray) -> np.ndarray:
         x, y, width, height, area = stats[index]
         if area < 20:
             continue
-        radius = max(2, round(min(width, height) * 0.16))
+        radius = max(2, round(min(width, height) * 0.08))
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (radius * 2 + 1, radius * 2 + 1))
         component = np.where(labels == index, 255, 0).astype(np.uint8)
         output = np.maximum(output, cv2.erode(component, kernel))
@@ -69,13 +69,23 @@ def _rough_rims(original: Image.Image, reference: Image.Image, reference_mask: n
 
 class GenerativeRimRenderer:
     name = "generative-rim"
-    version = "rim-render-2"
+    version = "rim-render-3"
 
     def __init__(self, provider: GenerativeImageEditProvider) -> None:
         self.provider = provider
 
-    def render(self, *, directory: Path, metadata: AssetBundle, modification: RimReplacementRequest) -> RenderResult:
+    def render(
+        self,
+        *,
+        directory: Path,
+        metadata: AssetBundle,
+        modification: RimReplacementRequest,
+        base_image: Image.Image | None = None,
+    ) -> RenderResult:
         reference_dir, reference_report = wheel_reference(directory, modification.reference_asset_id)
+        original, base_hash = render_base_image(
+            directory=directory, metadata=metadata, base_image=base_image
+        )
         key = request_hash(
             modification,
             renderer=self.name,
@@ -84,13 +94,13 @@ class GenerativeRimRenderer:
             reference_content_hash=reference_report.get("content_sha256", ""),
             provider_model=self.provider.model_id,
             renderer_version=f"{self.version}:{RIM_REFERENCE_VERSION}",
+            base_image_hash=base_hash,
         )
         output_dir = directory / "customisations" / key
         normalized_request = normalised_request_json(modification)
         if (output_dir / "result.png").is_file() and (output_dir / "request.json").is_file() and (output_dir / "request.json").read_text(encoding="utf-8") == normalized_request:
             return RenderResult(output_dir / "result.png", True, self.name, "passed", [])
         try:
-            original = Image.open(directory / metadata.original_image).convert("RGB")
             reference = Image.open(reference_dir / "normalized.png").convert("RGBA")
             reference_mask = cv2.imread(str(reference_dir / "reference-mask.png"), cv2.IMREAD_GRAYSCALE)
             if reference_mask is None:

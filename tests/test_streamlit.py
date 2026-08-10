@@ -3,6 +3,7 @@ import unittest
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -130,7 +131,8 @@ class StreamlitTest(unittest.TestCase):
             self.assertEqual(app.subheader[0].value, "Rear bumper replacement")
             self.assertEqual(app.file_uploader[1].label, "Reference bumper")
             self.assertGreaterEqual(len(app.image), 2)
-            self.assertFalse(app.button[1].disabled)
+            generate = next(button for button in app.button if button.label == "Generate bumper preview")
+            self.assertFalse(generate.disabled)
 
     def test_side_rim_workflow_shows_reference_preview(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -157,7 +159,42 @@ class StreamlitTest(unittest.TestCase):
             self.assertEqual(app.subheader[0].value, "Rim replacement")
             self.assertEqual(app.file_uploader[1].label, "Reference rim")
             self.assertGreaterEqual(len(app.image), 2)
-            self.assertFalse(app.button[1].disabled)
+            generate = next(button for button in app.button if button.label == "Generate rim preview")
+            self.assertFalse(generate.disabled)
+
+    def test_pending_preview_must_be_kept_before_it_becomes_current(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            asset_dir = root / ("b" * 64)
+            asset_dir.mkdir()
+            metadata = _side_asset(asset_dir)
+            car = _png()
+            pending = _png()
+            app = AppTest.from_file(str(Path(__file__).parents[1] / "streamlit_app.py"))
+            app.session_state["processed_source_hash"] = hashlib.sha256(car).hexdigest()
+            app.session_state["processed_view_selection"] = "left"
+            app.session_state["processed_metadata"] = metadata
+            app.session_state["processed_storage_root"] = root
+            app.session_state["composition_history"] = [{
+                "image_bytes": car,
+                "kind": "Original",
+                "quality_status": "passed",
+                "warnings": [],
+                "cached": False,
+            }]
+            app.session_state["pending_result_bytes"] = pending
+            app.session_state["pending_result_metadata"] = SimpleNamespace(
+                quality_status="passed", warnings=[], cached=False
+            )
+            app.session_state["pending_result_kind"] = "Paint"
+
+            app.run(timeout=10)
+            self.assertEqual(len(app.session_state["composition_history"]), 1)
+            next(button for button in app.button if button.label == "Keep this change").click()
+            app.run(timeout=10)
+
+            self.assertEqual(len(app.session_state["composition_history"]), 2)
+            self.assertIsNone(app.session_state["pending_result_bytes"])
 
 
 if __name__ == "__main__":

@@ -8,7 +8,8 @@ import numpy as np
 from PIL import Image
 
 from app.generative.mock import MockGenerativeImageEditProvider
-from app.modifications.schemas import RimReplacementRequest, parse_modification
+from app.modifications.schemas import RimReplacementRequest, SurfaceEditRequest, parse_modification
+from app.renderers.base import canonical_image_hash, request_hash
 from app.renderers.generative_rim import GenerativeRimRenderer, _rim_edit_mask
 from app.rim_analysis import rim_replacement_available, store_rim_reference, wheel_mask
 from app.schemas import AssetBundle, BoundingBox
@@ -76,6 +77,7 @@ class RimTest(unittest.TestCase):
             self.assertTrue(np.any(final[wheels >= 128] != original[wheels >= 128]))
             rim_mask = _rim_edit_mask(wheels)
             self.assertLess(np.count_nonzero(rim_mask), np.count_nonzero(wheels))
+            self.assertTrue(np.any(rim_mask[209:212, 45:85] >= 128))
             self.assertTrue(np.array_equal(final[(wheels >= 128) & (rim_mask < 128)], original[(wheels >= 128) & (rim_mask < 128)]))
 
     def test_front_view_with_wheels_is_supported(self):
@@ -85,6 +87,53 @@ class RimTest(unittest.TestCase):
             self.assertTrue(rim_replacement_available(root, metadata))
             reference = store_rim_reference(directory=root, metadata=metadata, source=self.rim_source())
             self.assertEqual(len(reference.reference_asset_id), 64)
+
+    def test_base_image_changes_cache_identity(self):
+        request = SurfaceEditRequest(body_colour="#ff0000")
+        original_key = request_hash(request, renderer="deterministic", pipeline_version="test")
+        self.assertEqual(
+            original_key,
+            request_hash(request, renderer="deterministic", pipeline_version="test"),
+        )
+        chained_key = request_hash(
+            request,
+            renderer="deterministic",
+            pipeline_version="test",
+            base_image_hash=canonical_image_hash(Image.new("RGB", (8, 8), (1, 2, 3))),
+        )
+        self.assertNotEqual(original_key, chained_key)
+
+    def test_rim_renderer_uses_base_image_and_validates_size(self):
+        class CapturingProvider(MockGenerativeImageEditProvider):
+            original_pixel = None
+
+            def edit(self, **kwargs):
+                self.original_pixel = kwargs["original"].getpixel((0, 0))
+                return super().edit(**kwargs)
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self.asset(root)
+            reference = store_rim_reference(directory=root, metadata=metadata, source=self.rim_source())
+            provider = CapturingProvider()
+            base = Image.new("RGB", (256, 256), (10, 20, 30))
+            result = GenerativeRimRenderer(provider).render(
+                directory=root,
+                metadata=metadata,
+                modification=RimReplacementRequest(reference_asset_id=reference.reference_asset_id),
+                base_image=base,
+            )
+            self.assertEqual(provider.original_pixel, (10, 20, 30))
+            final = np.asarray(Image.open(result.path).convert("RGB"))
+            wheels = wheel_mask(root, metadata)
+            self.assertTrue(np.array_equal(final[wheels < 128], np.asarray(base)[wheels < 128]))
+            with self.assertRaisesRegex(Exception, "dimensions"):
+                GenerativeRimRenderer(provider).render(
+                    directory=root,
+                    metadata=metadata,
+                    modification=RimReplacementRequest(reference_asset_id=reference.reference_asset_id),
+                    base_image=Image.new("RGB", (32, 32)),
+                )
 
 
 if __name__ == "__main__":

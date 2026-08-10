@@ -2,9 +2,11 @@
 
 import hashlib
 import json
+from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
+from PIL import Image
 
 from app.bumper_analysis.reference_preprocessor import store_bumper_reference
 from app.config import GenerativeSettings, Settings
@@ -28,9 +30,10 @@ for key, value in {
     "processed_view_selection": None,
     "processed_metadata": None,
     "processed_storage_root": None,
-    "current_result_bytes": None,
-    "current_result_metadata": None,
-    "current_result_kind": None,
+    "composition_history": [],
+    "pending_result_bytes": None,
+    "pending_result_metadata": None,
+    "pending_result_kind": None,
 }.items():
     st.session_state.setdefault(key, value)
 
@@ -38,10 +41,54 @@ for key, value in {
 def clear_processed() -> None:
     for key in (
         "processed_source_hash", "processed_view_selection", "processed_metadata",
-        "processed_storage_root", "current_result_bytes", "current_result_metadata",
-        "current_result_kind",
+        "processed_storage_root",
     ):
         st.session_state[key] = None
+    clear_composition()
+
+
+def clear_composition() -> None:
+    st.session_state.composition_history = []
+    st.session_state.pending_result_bytes = None
+    st.session_state.pending_result_metadata = None
+    st.session_state.pending_result_kind = None
+
+
+def png_bytes(image: Image.Image) -> bytes:
+    buffer = BytesIO()
+    image.convert("RGB").save(buffer, "PNG")
+    return buffer.getvalue()
+
+
+def init_composition(directory: Path, metadata) -> None:
+    if st.session_state.composition_history:
+        return
+    with Image.open(directory / metadata.original_image) as image:
+        st.session_state.composition_history = [{
+            "image_bytes": png_bytes(image),
+            "kind": "Original",
+            "quality_status": "passed",
+            "warnings": [],
+            "cached": False,
+        }]
+
+
+def working_bytes() -> bytes | None:
+    history = st.session_state.composition_history
+    return history[-1]["image_bytes"] if history else None
+
+
+def working_base_image() -> Image.Image | None:
+    history = st.session_state.composition_history
+    if len(history) <= 1:
+        return None
+    return Image.open(BytesIO(history[-1]["image_bytes"])).convert("RGB")
+
+
+def set_pending(kind: str, result) -> None:
+    st.session_state.pending_result_bytes = Path(result.path).read_bytes()
+    st.session_state.pending_result_metadata = result
+    st.session_state.pending_result_kind = kind
 
 
 single_tab, evaluation_tab = st.tabs(("Customise one image", "Evaluation gallery"))
@@ -74,7 +121,8 @@ with single_tab:
                 st.session_state.processed_view_selection = view
                 st.session_state.processed_metadata = metadata
                 st.session_state.processed_storage_root = settings.storage_root
-                st.session_state.current_result_bytes = None
+                clear_composition()
+                init_composition(Path(settings.storage_root) / metadata.asset_id, metadata)
             except PipelineError as exc:
                 st.error(f"{exc.detail} ({exc.code})")
             except (OSError, ValueError) as exc:
@@ -84,8 +132,42 @@ with single_tab:
     if source is not None:
         st.image(source, caption="Original", width="content")
     if metadata:
+        directory = Path(st.session_state.processed_storage_root) / metadata.asset_id
+        init_composition(directory, metadata)
         if metadata.requested_view == "auto":
             st.caption(f"Detected view: {metadata.view} ({metadata.view_confidence:.0%} confidence)")
+        history = st.session_state.composition_history
+        if history:
+            st.caption("Kept changes: " + " → ".join(item["kind"] for item in history))
+            undo_column, reset_column, download_column = st.columns(3)
+            if undo_column.button(
+                "Undo last change",
+                icon=":material/undo:",
+                disabled=len(history) <= 1,
+            ):
+                st.session_state.composition_history = history[:-1]
+                st.session_state.pending_result_bytes = None
+                st.session_state.pending_result_metadata = None
+                st.session_state.pending_result_kind = None
+                st.rerun()
+            if reset_column.button(
+                "Reset to original",
+                icon=":material/restart_alt:",
+                disabled=len(history) <= 1 and st.session_state.pending_result_bytes is None,
+            ):
+                st.session_state.composition_history = history[:1]
+                st.session_state.pending_result_bytes = None
+                st.session_state.pending_result_metadata = None
+                st.session_state.pending_result_kind = None
+                st.rerun()
+            download_column.download_button(
+                "Download current PNG",
+                working_bytes(),
+                file_name=f"{Path(uploaded.name).stem if uploaded else metadata.asset_id[:8]}-customised.png",
+                mime="image/png",
+                icon=":material/download:",
+                disabled=working_bytes() is None,
+            )
         options = ["Paint"]
         if metadata.available_modifications.bumper_replacement:
             options.append("Bumper replacement")
@@ -97,7 +179,6 @@ with single_tab:
             mode = "Paint"
             st.caption("Bumper and rim replacement need the matching detected masks for this MVP.")
 
-        directory = Path(st.session_state.processed_storage_root) / metadata.asset_id
         if mode == "Paint":
             with st.form("paint-controls"):
                 colour = st.color_picker("Body colour", "#183A63")
@@ -109,10 +190,9 @@ with single_tab:
                         directory=directory,
                         metadata=metadata,
                         modification=SurfaceEditRequest(body_colour=colour, finish=finish),
+                        base_image=working_base_image(),
                     )
-                    st.session_state.current_result_bytes = Path(result.path).read_bytes()
-                    st.session_state.current_result_metadata = result
-                    st.session_state.current_result_kind = "recoloured"
+                    set_pending("Paint", result)
                 except PipelineError as exc:
                     st.error(f"{exc.detail} ({exc.code})")
         elif mode == "Bumper replacement":
@@ -152,11 +232,10 @@ with single_tab:
                                     reference_asset_id=reference.reference_asset_id,
                                     paint_mode=("match_body" if paint_mode == "Match body" else "preserve_reference"),
                                 ),
+                                base_image=working_base_image(),
                             )
                             status.update(label="Bumper preview complete", state="complete")
-                        st.session_state.current_result_bytes = Path(result.path).read_bytes()
-                        st.session_state.current_result_metadata = result
-                        st.session_state.current_result_kind = "bumper-preview"
+                        set_pending("Bumper preview", result)
                     except PipelineError as exc:
                         st.error(f"{exc.detail} ({exc.code})")
         else:
@@ -180,24 +259,41 @@ with single_tab:
                                 directory=directory,
                                 metadata=metadata,
                                 modification=RimReplacementRequest(reference_asset_id=reference.reference_asset_id),
+                                base_image=working_base_image(),
                             )
                             status.update(label="Rim preview complete", state="complete")
-                        st.session_state.current_result_bytes = Path(result.path).read_bytes()
-                        st.session_state.current_result_metadata = result
-                        st.session_state.current_result_kind = "rim-preview"
+                        set_pending("Rim preview", result)
                     except PipelineError as exc:
                         st.error(f"{exc.detail} ({exc.code})")
 
-        rendered = st.session_state.current_result_bytes
-        result = st.session_state.current_result_metadata
-        if rendered and result:
-            original_column, result_column = st.columns(2)
-            original = source or directory / metadata.original_image
-            original_column.image(original, caption="Original", width="stretch")
-            result_column.image(rendered, caption=st.session_state.current_result_kind.replace("-", " ").capitalize(), width="stretch")
+        pending = st.session_state.pending_result_bytes
+        result = st.session_state.pending_result_metadata
+        current = working_bytes()
+        if pending and result and current:
+            current_column, result_column = st.columns(2)
+            current_column.image(current, caption="Current composition", width="stretch")
+            result_column.image(pending, caption=st.session_state.pending_result_kind, width="stretch")
+            keep_column, discard_column = result_column.columns(2)
+            if keep_column.button("Keep this change", icon=":material/check:", type="primary"):
+                st.session_state.composition_history.append({
+                    "image_bytes": pending,
+                    "kind": st.session_state.pending_result_kind,
+                    "quality_status": result.quality_status,
+                    "warnings": result.warnings,
+                    "cached": result.cached,
+                })
+                st.session_state.pending_result_bytes = None
+                st.session_state.pending_result_metadata = None
+                st.session_state.pending_result_kind = None
+                st.rerun()
+            if discard_column.button("Discard preview", icon=":material/close:"):
+                st.session_state.pending_result_bytes = None
+                st.session_state.pending_result_metadata = None
+                st.session_state.pending_result_kind = None
+                st.rerun()
             result_column.download_button(
-                "Download PNG", rendered,
-                file_name=f"{Path(uploaded.name).stem}-{st.session_state.current_result_kind}.png",
+                "Download preview PNG", pending,
+                file_name=f"{Path(uploaded.name).stem if uploaded else metadata.asset_id[:8]}-{st.session_state.pending_result_kind.lower().replace(' ', '-')}.png",
                 mime="image/png", icon=":material/download:",
             )
             st.success(f"Quality check: {result.quality_status.replace('_', ' ')}")
@@ -205,6 +301,10 @@ with single_tab:
                 st.caption("Loaded from cache")
             for warning in (*metadata.warnings, *result.warnings):
                 st.warning(warning)
+        elif current and len(st.session_state.composition_history) > 1:
+            original_column, current_column = st.columns(2)
+            original_column.image(st.session_state.composition_history[0]["image_bytes"], caption="Original", width="stretch")
+            current_column.image(current, caption="Current composition", width="stretch")
 
 with evaluation_tab:
     report_path = Path("evaluation/report.json")

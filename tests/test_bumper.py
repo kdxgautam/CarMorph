@@ -248,6 +248,32 @@ class BumperTest(unittest.TestCase):
                     modification=BumperReplacementRequest(bumper_position="front", reference_asset_id=reference.reference_asset_id),
                 )
 
+    def test_bumper_renderer_uses_base_image_and_restores_from_it(self):
+        class CapturingProvider(MockGenerativeImageEditProvider):
+            original_pixel = None
+
+            def edit(self, **kwargs):
+                self.original_pixel = kwargs["original"].getpixel((0, 0))
+                return super().edit(**kwargs)
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self.asset(root, "rear")
+            reference = store_bumper_reference(directory=root, metadata=metadata, source=self.transparent_reference(), settings=None)
+            base = Image.new("RGB", (256, 256), (20, 40, 60))
+            provider = CapturingProvider()
+            result = GenerativeBumperRenderer(provider).render(
+                directory=root,
+                metadata=metadata,
+                modification=BumperReplacementRequest(bumper_position="rear", reference_asset_id=reference.reference_asset_id),
+                base_image=base,
+            )
+            masks = build_bumper_masks(root, metadata)
+            final = np.asarray(Image.open(result.path).convert("RGB"))
+            self.assertEqual(provider.original_pixel, (20, 40, 60))
+            self.assertTrue(np.array_equal(final[masks.allowed < 128], np.asarray(base)[masks.allowed < 128]))
+            self.assertTrue(np.array_equal(final[masks.protected >= 128], np.asarray(base)[masks.protected >= 128]))
+
     def test_side_view_is_rejected(self):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

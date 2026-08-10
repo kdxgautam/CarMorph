@@ -19,7 +19,7 @@ from app.generative.base import GenerativeImageEditProvider
 from app.modifications.schemas import BumperReplacementRequest, normalised_request_json
 from app.quality.bumper_checks import check_bumper_render
 from app.quality.checks import QualityStatus
-from app.renderers.base import RenderResult, request_hash
+from app.renderers.base import RenderResult, render_base_image, request_hash
 from app.schemas import AssetBundle
 
 
@@ -87,10 +87,20 @@ class GenerativeBumperRenderer:
         except (OSError, ValueError, KeyError):
             return None
 
-    def render(self, *, directory: Path, metadata: AssetBundle, modification: BumperReplacementRequest) -> RenderResult:
+    def render(
+        self,
+        *,
+        directory: Path,
+        metadata: AssetBundle,
+        modification: BumperReplacementRequest,
+        base_image: Image.Image | None = None,
+    ) -> RenderResult:
         if metadata.view not in {"front", "rear"} or metadata.view != modification.bumper_position:
             raise PipelineError("unsupported_bumper_view", "Bumper position must match the processed front or rear view", 400)
         reference_dir, reference_report = self._reference(directory, modification.reference_asset_id)
+        original, base_hash = render_base_image(
+            directory=directory, metadata=metadata, base_image=base_image
+        )
         key = request_hash(
             modification,
             renderer=self.name,
@@ -99,6 +109,7 @@ class GenerativeBumperRenderer:
             reference_content_hash=reference_report.content_sha256,
             provider_model=self.provider.model_id,
             renderer_version=f"{self.version}:{REFERENCE_PROCESSING_VERSION}",
+            base_image_hash=base_hash,
         )
         output_dir = directory / "customisations" / key
         normalized_request = normalised_request_json(modification)
@@ -106,8 +117,6 @@ class GenerativeBumperRenderer:
         if cached:
             return cached
         try:
-            with Image.open(directory / metadata.original_image) as image:
-                original = image.convert("RGB")
             with Image.open(reference_dir / reference_report.normalized_image) as image:
                 reference = image.convert("RGBA")
             reference_mask = cv2.imread(str(reference_dir / reference_report.reference_mask), cv2.IMREAD_GRAYSCALE)
