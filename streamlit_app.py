@@ -10,10 +10,12 @@ from app.bumper_analysis.reference_preprocessor import store_bumper_reference
 from app.config import GenerativeSettings, Settings
 from app.errors import PipelineError
 from app.generative.vertex_ai import vertex_provider
-from app.modifications.schemas import BumperReplacementRequest, SurfaceEditRequest
+from app.modifications.schemas import BumperReplacementRequest, RimReplacementRequest, SurfaceEditRequest
 from app.pipeline import process_view
 from app.renderers.deterministic import DeterministicSurfaceRenderer
 from app.renderers.generative_bumper import GenerativeBumperRenderer
+from app.renderers.generative_rim import GenerativeRimRenderer
+from app.rim_analysis import store_rim_reference
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
@@ -84,11 +86,16 @@ with single_tab:
     if metadata:
         if metadata.requested_view == "auto":
             st.caption(f"Detected view: {metadata.view} ({metadata.view_confidence:.0%} confidence)")
+        options = ["Paint"]
         if metadata.available_modifications.bumper_replacement:
-            mode = st.segmented_control("Modification", ["Paint", "Bumper replacement"], default="Paint")
+            options.append("Bumper replacement")
+        if metadata.available_modifications.rim_replacement:
+            options.append("Rim replacement")
+        if len(options) > 1:
+            mode = st.segmented_control("Modification", options, default="Paint")
         else:
             mode = "Paint"
-            st.caption("Bumper replacement is available only for front and rear views with a detected bumper in this MVP.")
+            st.caption("Bumper and rim replacement need the matching detected masks for this MVP.")
 
         directory = Path(st.session_state.processed_storage_root) / metadata.asset_id
         if mode == "Paint":
@@ -108,7 +115,7 @@ with single_tab:
                     st.session_state.current_result_kind = "recoloured"
                 except PipelineError as exc:
                     st.error(f"{exc.detail} ({exc.code})")
-        else:
+        elif mode == "Bumper replacement":
             with st.container(border=True):
                 st.subheader(f"{metadata.view.capitalize()} bumper replacement")
                 reference_upload = st.file_uploader(
@@ -150,6 +157,34 @@ with single_tab:
                         st.session_state.current_result_bytes = Path(result.path).read_bytes()
                         st.session_state.current_result_metadata = result
                         st.session_state.current_result_kind = "bumper-preview"
+                    except PipelineError as exc:
+                        st.error(f"{exc.detail} ({exc.code})")
+        else:
+            with st.container(border=True):
+                st.subheader("Rim replacement")
+                rim_upload = st.file_uploader("Reference rim", type=("jpg", "jpeg", "png", "webp"), key="rim_reference")
+                if rim_upload is not None:
+                    st.image(rim_upload.getvalue(), caption="Reference rim to use", width="content")
+                st.caption("Use a clean single-rim image, preferably transparent PNG or plain background.")
+                st.info("This is a visual preview and does not guarantee physical compatibility.", icon=":material/info:")
+                with st.form("rim-controls"):
+                    rim_submitted = st.form_submit_button(
+                        "Generate rim preview", icon=":material/auto_awesome:", type="primary", disabled=rim_upload is None
+                    )
+                if rim_submitted and rim_upload is not None:
+                    try:
+                        with st.status("Preparing rim preview", expanded=True) as status:
+                            reference = store_rim_reference(directory=directory, metadata=metadata, source=rim_upload.getvalue())
+                            status.update(label="Generating rim preview with Vertex AI")
+                            result = GenerativeRimRenderer(vertex_provider(GenerativeSettings.from_env())).render(
+                                directory=directory,
+                                metadata=metadata,
+                                modification=RimReplacementRequest(reference_asset_id=reference.reference_asset_id),
+                            )
+                            status.update(label="Rim preview complete", state="complete")
+                        st.session_state.current_result_bytes = Path(result.path).read_bytes()
+                        st.session_state.current_result_metadata = result
+                        st.session_state.current_result_kind = "rim-preview"
                     except PipelineError as exc:
                         st.error(f"{exc.detail} ({exc.code})")
 

@@ -18,10 +18,12 @@ from app.config import GenerativeSettings, Settings
 from app.errors import PipelineError
 from app.image_ops import recolour
 from app.generative.vertex_ai import vertex_provider
-from app.modifications.schemas import SurfaceEditRequest, parse_modification
+from app.modifications.schemas import BumperReplacementRequest, SurfaceEditRequest, parse_modification
 from app.pipeline import process_view
 from app.renderers.deterministic import DeterministicSurfaceRenderer
 from app.renderers.generative_bumper import GenerativeBumperRenderer
+from app.renderers.generative_rim import GenerativeRimRenderer
+from app.rim_analysis import store_rim_reference
 from app.schemas import AssetBundle, ViewSelection
 
 app = FastAPI(title="Car Customisation API", version="0.1.0")
@@ -159,6 +161,16 @@ def upload_bumper_reference(
     )
 
 
+@app.post("/cars/{asset_id}/rim-references", response_model=BumperReferenceResponse, status_code=201)
+def upload_rim_reference(
+    asset_id: str,
+    image: Annotated[UploadFile, File()],
+) -> BumperReferenceResponse:
+    directory, metadata = _asset(asset_id)
+    source = image.file.read(MAX_UPLOAD_BYTES + 1)
+    return store_rim_reference(directory=directory, metadata=metadata, source=source)
+
+
 @app.post("/cars/{asset_id}/customise")
 async def customise(asset_id: str, request: Request) -> FileResponse:
     """Validate a deterministic paint edit and return its PNG."""
@@ -173,8 +185,12 @@ async def customise(asset_id: str, request: Request) -> FileResponse:
         result = DeterministicSurfaceRenderer().render(
             directory=directory, metadata=metadata, modification=modification
         )
-    else:
+    elif isinstance(modification, BumperReplacementRequest):
         result = GenerativeBumperRenderer(vertex_provider(GenerativeSettings.from_env())).render(
+            directory=directory, metadata=metadata, modification=modification
+        )
+    else:
+        result = GenerativeRimRenderer(vertex_provider(GenerativeSettings.from_env())).render(
             directory=directory, metadata=metadata, modification=modification
         )
     return FileResponse(

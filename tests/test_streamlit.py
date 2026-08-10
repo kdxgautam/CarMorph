@@ -55,6 +55,38 @@ def _rear_asset(root: Path) -> AssetBundle:
     )
 
 
+def _side_asset(root: Path) -> AssetBundle:
+    shape = (64, 64)
+    masks = {
+        "full_car": _mask(shape, (5, 5, 59, 55)),
+        "wheels": np.zeros(shape, np.uint8),
+    }
+    masks["wheels"][42:58, 8:24] = 255
+    masks["wheels"][42:58, 40:56] = 255
+    paths = {}
+    for key, value in masks.items():
+        name = f"{key}.png"
+        cv2.imwrite(str(root / name), value)
+        paths[key] = name
+    Image.new("RGB", (64, 64), (90, 90, 90)).save(root / "original.webp")
+    return AssetBundle(
+        asset_id="b" * 64,
+        view="left",
+        requested_view="left",
+        view_confidence=1,
+        width=64,
+        height=64,
+        car_bbox=BoundingBox(x1=5, y1=5, x2=59, y2=55, confidence=1),
+        source_image="source.jpg",
+        original_image="original.webp",
+        luminance_map="l.png",
+        masks=paths,
+        models={},
+        pipeline_version="test",
+        available_modifications=AvailableModifications(rim_replacement=True),
+    )
+
+
 def _png(size=(64, 64)) -> bytes:
     buffer = BytesIO()
     Image.new("RGB", size, (120, 120, 120)).save(buffer, "PNG")
@@ -97,6 +129,33 @@ class StreamlitTest(unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertEqual(app.subheader[0].value, "Rear bumper replacement")
             self.assertEqual(app.file_uploader[1].label, "Reference bumper")
+            self.assertGreaterEqual(len(app.image), 2)
+            self.assertFalse(app.button[1].disabled)
+
+    def test_side_rim_workflow_shows_reference_preview(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            asset_dir = root / ("b" * 64)
+            asset_dir.mkdir()
+            metadata = _side_asset(asset_dir)
+            car = _png()
+            app = AppTest.from_file(str(Path(__file__).parents[1] / "streamlit_app.py"))
+            app.session_state["processed_source_hash"] = hashlib.sha256(car).hexdigest()
+            app.session_state["processed_view_selection"] = "left"
+            app.session_state["processed_metadata"] = metadata
+            app.session_state["processed_storage_root"] = root
+
+            app.run(timeout=10)
+            app.file_uploader[0].upload("side-car.png", car, "image/png")
+            app.selectbox[0].set_value("left")
+            app.segmented_control[0].set_value("Rim replacement")
+            app.run(timeout=10)
+            app.file_uploader[1].upload("rim.png", _png((32, 32)), "image/png")
+            app.run(timeout=10)
+
+            self.assertFalse(app.exception)
+            self.assertEqual(app.subheader[0].value, "Rim replacement")
+            self.assertEqual(app.file_uploader[1].label, "Reference rim")
             self.assertGreaterEqual(len(app.image), 2)
             self.assertFalse(app.button[1].disabled)
 

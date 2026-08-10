@@ -36,6 +36,7 @@ from app.paint_analysis.diagnostics import (
 from app.paint_analysis.paint_group_classifier import analyse_paint_groups
 from app.paint_analysis.schemas import PaintGroup
 from app.bumper_analysis.mask_builder import bumper_replacement_available
+from app.rim_analysis import rim_replacement_available
 from app.quality.checks import check_paint_analysis
 from app.roboflow import segment_boxes, segment_concepts
 from app.schemas import (
@@ -146,7 +147,10 @@ def _read_result(metadata: Path) -> AssetBundle:
     return result.model_copy(
         update={
             "available_modifications": result.available_modifications.model_copy(
-                update={"bumper_replacement": bumper_replacement_available(metadata.parent, result)}
+                update={
+                    "bumper_replacement": bumper_replacement_available(metadata.parent, result),
+                    "rim_replacement": rim_replacement_available(metadata.parent, result),
+                }
             )
         }
     )
@@ -481,6 +485,9 @@ def process_view(
                 paint_analysis_version=PAINT_ANALYSIS_VERSION,
                 available_modifications=AvailableModifications(
                     roof_colour=True,
+                    rim_replacement=bool(
+                        np.any(part_masks["wheels"] >= 128)
+                    ),
                     bumper_replacement=bool(
                         resolved_view in {"front", "rear"}
                         and np.any(part_masks["bumper"] >= 128)

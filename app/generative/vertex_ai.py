@@ -92,7 +92,7 @@ class VertexAIBumperProvider:
         mask = Image.fromarray(np.where(edit_mask >= 128, 255, 0).astype(np.uint8)).convert("RGB")
         parts = [
             "Image 1 — original target car:", self._types.Part.from_bytes(data=_png(original.convert("RGB")), mime_type="image/png"),
-            "Image 2 — isolated reference bumper:", self._types.Part.from_bytes(data=_png(reference.convert("RGBA")), mime_type="image/png"),
+            "Image 2 — isolated reference part:", self._types.Part.from_bytes(data=_png(reference.convert("RGBA")), mime_type="image/png"),
             "Image 3 — deterministic rough placement:", self._types.Part.from_bytes(data=_png(rough_composite.convert("RGB")), mime_type="image/png"),
             "Image 4 — strict white edit mask; black pixels must remain unchanged:", self._types.Part.from_bytes(data=_png(mask), mime_type="image/png"),
             instruction,

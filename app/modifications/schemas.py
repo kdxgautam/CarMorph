@@ -96,8 +96,25 @@ class BumperReplacementRequest(BaseModel):
         return normalized
 
 
+class RimReplacementRequest(BaseModel):
+    """Validated, prompt-free request for a constrained rim preview."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["rim_replacement"] = "rim_replacement"
+    reference_asset_id: str
+
+    @field_validator("reference_asset_id")
+    @classmethod
+    def validate_reference_asset_id(cls, value: str) -> str:
+        normalized = value.lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+            raise ValueError("Reference asset ID must be a SHA-256 identifier")
+        return normalized
+
+
 ModificationRequest = Annotated[
-    SurfaceEditRequest | BumperReplacementRequest,
+    SurfaceEditRequest | BumperReplacementRequest | RimReplacementRequest,
     Field(discriminator="type"),
 ]
 _MODIFICATION_ADAPTER = TypeAdapter(ModificationRequest)
