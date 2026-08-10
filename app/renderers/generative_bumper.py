@@ -25,9 +25,9 @@ from app.schemas import AssetBundle
 
 def build_bumper_prompt(request: BumperReplacementRequest) -> str:
     paint = (
-        "Render painted bumper sections in the target car's existing body colour and lighting."
+        "Paint mode is match_body: recolour visible painted surfaces of the replacement or add-on to the target car's body colour under the target lighting; do not preserve the reference colour except for non-painted materials such as chrome, black plastic, rubber, glass, or bare metal."
         if request.paint_mode == "match_body"
-        else "Preserve the reference bumper's visible material and colour as closely as possible."
+        else "Paint mode is preserve_reference: keep the reference bumper or add-on's visible colour and material treatment as closely as possible; do not recolour it to match the target car body."
     )
     return (
         f"Replace only the masked {request.bumper_position} bumper. Image 1 is authoritative for the car, camera, lighting and protected content. "

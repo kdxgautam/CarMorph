@@ -17,7 +17,7 @@ from app.errors import PipelineError
 from app.generative.mock import MockGenerativeImageEditProvider
 from app.generative.vertex_ai import _normalise_generated_image, _timeout_milliseconds
 from app.modifications.schemas import BumperReplacementRequest, parse_modification
-from app.renderers.generative_bumper import GenerativeBumperRenderer
+from app.renderers.generative_bumper import GenerativeBumperRenderer, build_bumper_prompt
 from app.schemas import AssetBundle, BoundingBox
 
 
@@ -98,6 +98,18 @@ class BumperTest(unittest.TestCase):
     def test_first_generated_image_is_a_stable_selection_policy(self):
         images = [b"primary", b"additional"]
         self.assertEqual(images[0], b"primary")
+
+    def test_bumper_prompt_paint_modes_are_not_flipped(self):
+        match = build_bumper_prompt(
+            BumperReplacementRequest(bumper_position="rear", reference_asset_id="a" * 64, paint_mode="match_body")
+        )
+        preserve = build_bumper_prompt(
+            BumperReplacementRequest(bumper_position="rear", reference_asset_id="a" * 64, paint_mode="preserve_reference")
+        )
+        self.assertIn("Paint mode is match_body", match)
+        self.assertIn("target car's body colour", match)
+        self.assertIn("Paint mode is preserve_reference", preserve)
+        self.assertIn("do not recolour it to match the target car body", preserve)
 
     def test_reference_masks_geometry_and_cache(self):
         with TemporaryDirectory() as temporary:
