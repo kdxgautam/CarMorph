@@ -12,11 +12,12 @@ from app.bumper_analysis.reference_preprocessor import store_bumper_reference
 from app.config import GenerativeSettings, Settings
 from app.errors import PipelineError
 from app.generative.vertex_ai import vertex_provider
-from app.modifications.schemas import BumperReplacementRequest, RimReplacementRequest, SurfaceEditRequest
+from app.modifications.schemas import BumperReplacementRequest, RimReplacementRequest, StudioRenderRequest, SurfaceEditRequest
 from app.pipeline import process_view
 from app.renderers.deterministic import DeterministicSurfaceRenderer
 from app.renderers.generative_bumper import GenerativeBumperRenderer
 from app.renderers.generative_rim import GenerativeRimRenderer
+from app.renderers.generative_studio import GenerativeStudioRenderer
 from app.rim_analysis import store_rim_reference
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -168,7 +169,7 @@ with single_tab:
                 icon=":material/download:",
                 disabled=working_bytes() is None,
             )
-        options = ["Paint"]
+        options = ["Paint", "Studio Render"]
         if metadata.available_modifications.bumper_replacement:
             options.append("Bumper replacement")
         if metadata.available_modifications.rim_replacement:
@@ -238,6 +239,24 @@ with single_tab:
                         set_pending("Bumper preview", result)
                     except PipelineError as exc:
                         st.error(f"{exc.detail} ({exc.code})")
+        elif mode == "Studio Render":
+            with st.form("studio-controls"):
+                studio_style = st.selectbox("Studio style", ("light_studio", "dark_studio", "premium_gradient"))
+                preserve_plate = st.checkbox("Preserve number plate", value=True)
+                studio_submitted = st.form_submit_button("Generate studio render", icon=":material/photo_camera:", type="primary")
+            if studio_submitted:
+                try:
+                    with st.status("Generating studio render", expanded=True) as status:
+                        result = GenerativeStudioRenderer(vertex_provider(GenerativeSettings.from_env())).render(
+                            directory=directory,
+                            metadata=metadata,
+                            modification=StudioRenderRequest(style=studio_style, preserve_plate=preserve_plate),
+                            base_image=working_base_image(),
+                        )
+                        status.update(label="Studio render complete", state="complete")
+                    set_pending("Studio Render", result)
+                except PipelineError as exc:
+                    st.error(f"{exc.detail} ({exc.code})")
         else:
             with st.container(border=True):
                 st.subheader("Rim replacement")

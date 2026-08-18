@@ -18,11 +18,12 @@ from app.config import GenerativeSettings, Settings
 from app.errors import PipelineError
 from app.image_ops import recolour
 from app.generative.vertex_ai import vertex_provider
-from app.modifications.schemas import BumperReplacementRequest, SurfaceEditRequest, parse_modification
+from app.modifications.schemas import BumperReplacementRequest, StudioRenderRequest, SurfaceEditRequest, parse_modification
 from app.pipeline import process_view
 from app.renderers.deterministic import DeterministicSurfaceRenderer
 from app.renderers.generative_bumper import GenerativeBumperRenderer
 from app.renderers.generative_rim import GenerativeRimRenderer
+from app.renderers.generative_studio import GenerativeStudioRenderer
 from app.rim_analysis import store_rim_reference
 from app.schemas import AssetBundle, ViewSelection
 
@@ -187,6 +188,10 @@ async def customise(asset_id: str, request: Request) -> FileResponse:
         )
     elif isinstance(modification, BumperReplacementRequest):
         result = GenerativeBumperRenderer(vertex_provider(GenerativeSettings.from_env())).render(
+            directory=directory, metadata=metadata, modification=modification
+        )
+    elif isinstance(modification, StudioRenderRequest):
+        result = GenerativeStudioRenderer(vertex_provider(GenerativeSettings.from_env())).render(
             directory=directory, metadata=metadata, modification=modification
         )
     else:

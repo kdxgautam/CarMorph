@@ -162,6 +162,31 @@ class StreamlitTest(unittest.TestCase):
             generate = next(button for button in app.button if button.label == "Generate rim preview")
             self.assertFalse(generate.disabled)
 
+    def test_studio_render_controls_are_available(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            asset_dir = root / ("b" * 64)
+            asset_dir.mkdir()
+            metadata = _side_asset(asset_dir)
+            car = _png()
+            app = AppTest.from_file(str(Path(__file__).parents[1] / "streamlit_app.py"))
+            app.session_state["processed_source_hash"] = hashlib.sha256(car).hexdigest()
+            app.session_state["processed_view_selection"] = "left"
+            app.session_state["processed_metadata"] = metadata
+            app.session_state["processed_storage_root"] = root
+
+            app.run(timeout=10)
+            app.file_uploader[0].upload("side-car.png", car, "image/png")
+            app.selectbox[0].set_value("left")
+            app.segmented_control[0].set_value("Studio Render")
+            app.run(timeout=10)
+
+            self.assertFalse(app.exception)
+            self.assertEqual(app.selectbox[1].label, "Studio style")
+            self.assertEqual(app.checkbox[0].label, "Preserve number plate")
+            generate = next(button for button in app.button if button.label == "Generate studio render")
+            self.assertFalse(generate.disabled)
+
     def test_pending_preview_must_be_kept_before_it_becomes_current(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

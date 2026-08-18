@@ -113,8 +113,36 @@ class RimReplacementRequest(BaseModel):
         return normalized
 
 
+class StudioRenderStyle(StrEnum):
+    """Supported studio presentation presets."""
+
+    LIGHT_STUDIO = "light_studio"
+    DARK_STUDIO = "dark_studio"
+    PREMIUM_GRADIENT = "premium_gradient"
+
+
+class StudioRenderFidelity(StrEnum):
+    """Identity preservation strength for studio renders."""
+
+    HIGH = "high"
+
+
+class StudioRenderRequest(BaseModel):
+    """Validated request for an identity-preserving studio presentation render."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["studio_render"] = "studio_render"
+    style: StudioRenderStyle = StudioRenderStyle.LIGHT_STUDIO
+    fidelity: StudioRenderFidelity = StudioRenderFidelity.HIGH
+    preserve_plate: bool = True
+
+
 ModificationRequest = Annotated[
-    SurfaceEditRequest | BumperReplacementRequest | RimReplacementRequest,
+    SurfaceEditRequest
+    | BumperReplacementRequest
+    | RimReplacementRequest
+    | StudioRenderRequest,
     Field(discriminator="type"),
 ]
 _MODIFICATION_ADAPTER = TypeAdapter(ModificationRequest)
