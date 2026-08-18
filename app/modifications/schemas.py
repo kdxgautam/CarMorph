@@ -127,6 +127,41 @@ class StudioRenderFidelity(StrEnum):
     HIGH = "high"
 
 
+class VehicleIdentity(BaseModel):
+    """User-confirmable visual identity cues used to guide studio rendering."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    make: str = Field(min_length=1, max_length=80)
+    model: str = Field(min_length=1, max_length=80)
+    generation: str = Field(min_length=1, max_length=120)
+    body_style: str = Field(min_length=1, max_length=80)
+    trim: str | None = Field(default=None, max_length=120)
+    visual_cues: list[str] = Field(default_factory=list, max_length=8)
+    confidence: float = Field(ge=0, le=1)
+
+    @field_validator("make", "model", "generation", "body_style")
+    @classmethod
+    def strip_identity_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Vehicle identity fields cannot be blank")
+        return cleaned
+
+    @field_validator("trim")
+    @classmethod
+    def strip_optional_trim(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
+
+    @field_validator("visual_cues")
+    @classmethod
+    def clean_visual_cues(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip() for value in values if value.strip()]
+        if any(len(value) > 160 for value in cleaned):
+            raise ValueError("Visual cues must be at most 160 characters")
+        return cleaned
+
+
 class StudioRenderRequest(BaseModel):
     """Validated request for an identity-preserving studio presentation render."""
 
@@ -136,6 +171,18 @@ class StudioRenderRequest(BaseModel):
     style: StudioRenderStyle = StudioRenderStyle.LIGHT_STUDIO
     fidelity: StudioRenderFidelity = StudioRenderFidelity.HIGH
     preserve_plate: bool = True
+    vehicle_identity: VehicleIdentity | None = None
+    reference_asset_ids: list[str] = Field(default_factory=list, max_length=4)
+
+    @field_validator("reference_asset_ids")
+    @classmethod
+    def validate_reference_asset_ids(cls, values: list[str]) -> list[str]:
+        normalized = [value.lower() for value in values]
+        if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in normalized):
+            raise ValueError("Reference asset IDs must be SHA-256 identifiers")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Reference asset IDs must be unique")
+        return normalized
 
 
 ModificationRequest = Annotated[

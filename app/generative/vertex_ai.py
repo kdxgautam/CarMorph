@@ -1,5 +1,6 @@
 """Vertex AI Gemini image provider with no public prompt or credential surface."""
 
+from collections.abc import Sequence
 from functools import lru_cache
 from io import BytesIO
 
@@ -9,6 +10,7 @@ from PIL import Image
 
 from app.config import GenerativeSettings
 from app.errors import PipelineError
+from app.modifications.schemas import VehicleIdentity
 
 
 def _png(image: Image.Image) -> bytes:
@@ -86,7 +88,41 @@ class VertexAIBumperProvider:
                 500,
             ) from exc
 
-    def edit(self, *, original: Image.Image, reference: Image.Image, rough_composite: Image.Image, edit_mask: np.ndarray, instruction: str) -> Image.Image:
+    def identify_vehicle(self, images: Sequence[Image.Image]) -> VehicleIdentity:
+        parts = []
+        for index, image in enumerate(images, 1):
+            parts.extend([
+                f"Vehicle image {index}; image 1 is authoritative and later images are optional supporting views:",
+                self._types.Part.from_bytes(data=_png(image.convert("RGB")), mime_type="image/png"),
+            ])
+        parts.append(
+            "Identify only visual automotive identity: make, model, generation or year range, body style, optional trim, "
+            "up to eight visible exterior cues, and confidence from 0 to 1. If the supporting images conflict, trust image 1 and lower confidence."
+        )
+        try:
+            response = self._client.models.generate_content(
+                model=self.model_id,
+                contents=parts,
+                config=self._types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=VehicleIdentity,
+                ),
+            )
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            raise PipelineError("generative_provider_timeout", "Vehicle identity analysis timed out", 504) from exc
+        except Exception as exc:
+            raise PipelineError("generative_provider_error", "Vehicle identity analysis failed", 502) from exc
+        try:
+            parsed = getattr(response, "parsed", None)
+            if isinstance(parsed, VehicleIdentity):
+                return parsed
+            if isinstance(parsed, dict):
+                return VehicleIdentity.model_validate(parsed)
+            return VehicleIdentity.model_validate_json(response.text)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise PipelineError("invalid_vehicle_identity", "Vertex AI returned an invalid vehicle identity", 502) from exc
+
+    def edit(self, *, original: Image.Image, reference: Image.Image, rough_composite: Image.Image, edit_mask: np.ndarray, instruction: str, additional_references: Sequence[Image.Image] = ()) -> Image.Image:
         if edit_mask.shape != (original.height, original.width):
             raise PipelineError("invalid_generated_image", "Edit mask dimensions are invalid", 502)
         mask = Image.fromarray(np.where(edit_mask >= 128, 255, 0).astype(np.uint8)).convert("RGB")
@@ -95,8 +131,13 @@ class VertexAIBumperProvider:
             "Image 2 — isolated reference part:", self._types.Part.from_bytes(data=_png(reference.convert("RGBA")), mime_type="image/png"),
             "Image 3 — deterministic rough placement:", self._types.Part.from_bytes(data=_png(rough_composite.convert("RGB")), mime_type="image/png"),
             "Image 4 — strict white edit mask; black pixels must remain unchanged:", self._types.Part.from_bytes(data=_png(mask), mime_type="image/png"),
-            instruction,
         ]
+        for index, image in enumerate(additional_references, 5):
+            parts.extend([
+                f"Image {index} — optional vehicle identity reference:",
+                self._types.Part.from_bytes(data=_png(image.convert("RGB")), mime_type="image/png"),
+            ])
+        parts.append(instruction)
         try:
             response = self._client.models.generate_content(
                 model=self.model_id,

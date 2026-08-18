@@ -1,5 +1,6 @@
 """Provider contract shared by production and test image editors."""
 
+from collections.abc import Sequence
 from typing import Protocol
 
 import numpy as np
@@ -18,4 +19,5 @@ class GenerativeImageEditProvider(Protocol):
         rough_composite: Image.Image,
         edit_mask: np.ndarray,
         instruction: str,
+        additional_references: Sequence[Image.Image] = (),
     ) -> Image.Image: ...

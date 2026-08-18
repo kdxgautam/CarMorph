@@ -102,7 +102,7 @@ class StreamlitTest(unittest.TestCase):
 
         self.assertFalse(app.exception)
         self.assertEqual(app.title[0].value, "Car Paint Studio")
-        self.assertEqual(len(app.tabs), 2)
+        self.assertEqual(len(app.tabs), 3)
         self.assertTrue(app.button[0].disabled)
         self.assertEqual(app.selectbox[0].value, "auto")
 
@@ -178,14 +178,32 @@ class StreamlitTest(unittest.TestCase):
             app.run(timeout=10)
             app.file_uploader[0].upload("side-car.png", car, "image/png")
             app.selectbox[0].set_value("left")
-            app.segmented_control[0].set_value("Studio Render")
             app.run(timeout=10)
 
             self.assertFalse(app.exception)
-            self.assertEqual(app.selectbox[1].label, "Studio style")
-            self.assertEqual(app.checkbox[0].label, "Preserve number plate")
+            self.assertNotIn("Studio Render", app.segmented_control[0].options)
+            self.assertEqual(
+                {item.label for item in app.file_uploader if item.label.endswith("view")},
+                {"Front view", "Rear view", "Left view", "Right view"},
+            )
             generate = next(button for button in app.button if button.label == "Generate studio render")
-            self.assertFalse(generate.disabled)
+            self.assertTrue(generate.disabled)
+
+    def test_four_studio_views_and_optional_angled_target_enable_render(self) -> None:
+        app = AppTest.from_file(str(Path(__file__).parents[1] / "streamlit_app.py")).run(timeout=10)
+        studio_labels = {"Front view", "Rear view", "Left view", "Right view"}
+        for uploader in app.file_uploader:
+            if uploader.label in studio_labels:
+                uploader.upload(f"{uploader.label}.png", _png(), "image/png")
+            elif uploader.label == "Three-quarter target (optional)":
+                uploader.upload("three-quarter.png", _png(), "image/png")
+        app.run(timeout=10)
+
+        self.assertFalse(app.exception)
+        target = next(item for item in app.selectbox if item.label == "Target view")
+        self.assertEqual(target.value, "angled")
+        generate = next(button for button in app.button if button.label == "Generate studio render")
+        self.assertFalse(generate.disabled)
 
     def test_pending_preview_must_be_kept_before_it_becomes_current(self) -> None:
         with TemporaryDirectory() as temporary:

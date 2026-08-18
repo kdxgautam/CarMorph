@@ -1,4 +1,3 @@
-import asyncio
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,11 +9,12 @@ from PIL import Image
 
 from app.errors import PipelineError
 from app.generative.mock import MockGenerativeImageEditProvider
-from app.main import customise
-from app.modifications.schemas import StudioRenderRequest, parse_modification
+from app.main import studio_render
+from app.modifications.schemas import StudioRenderRequest, VehicleIdentity, parse_modification
 from app.renderers.base import RenderResult
 from app.renderers.generative_studio import GenerativeStudioRenderer, build_studio_prompt
 from app.schemas import AssetBundle, BoundingBox
+from app.studio_references import store_studio_reference
 
 
 def mask(shape, box):
@@ -121,7 +121,57 @@ class StudioTest(unittest.TestCase):
                     modification=StudioRenderRequest(),
                 )
 
-    def test_customise_routes_studio_render(self):
+    def test_references_are_prioritized_and_protected_details_are_restored(self):
+        class CapturingProvider(MockGenerativeImageEditProvider):
+            def __init__(self):
+                self.calls = []
+
+            def edit(self, **kwargs):
+                self.calls.append(kwargs)
+                return Image.new("RGB", kwargs["original"].size, (255, 0, 0))
+
+        def image_bytes(colour):
+            from io import BytesIO
+
+            output = BytesIO()
+            Image.new("RGB", (24, 24), colour).save(output, "PNG")
+            return output.getvalue()
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata = self.asset(root)
+            lights = mask((96, 128), (24, 28, 34, 38))
+            cv2.imwrite(str(root / "lights.png"), lights)
+            metadata.masks["lights"] = "lights.png"
+            user = store_studio_reference(directory=root, source=image_bytes((10, 200, 10)), kind="user")
+            side = store_studio_reference(directory=root, source=image_bytes((10, 10, 200)), kind="user")
+            provider = CapturingProvider()
+            renderer = GenerativeStudioRenderer(provider)
+            request = StudioRenderRequest(
+                vehicle_identity=VehicleIdentity(
+                    make="Honda", model="Civic", generation="10th generation",
+                    body_style="sedan", visual_cues=["C-shaped lamps"], confidence=0.9,
+                ),
+                reference_asset_ids=[user.reference_asset_id, side.reference_asset_id],
+            )
+            result = renderer.render(directory=root, metadata=metadata, modification=request)
+            user_only = renderer.render(
+                directory=root,
+                metadata=metadata,
+                modification=request.model_copy(update={"reference_asset_ids": [user.reference_asset_id]}),
+            )
+
+            references = provider.calls[0]["additional_references"]
+            self.assertEqual(references[0].getpixel((0, 0)), (10, 200, 10))
+            self.assertEqual(references[1].getpixel((0, 0)), (10, 10, 200))
+            self.assertIn("2 user-supplied supporting views", provider.calls[0]["instruction"])
+            self.assertEqual(provider.calls[0]["edit_mask"][30, 28], 0)
+            final = Image.open(result.path).convert("RGB")
+            original = Image.open(root / metadata.original_image).convert("RGB")
+            self.assertEqual(final.getpixel((28, 30)), original.getpixel((28, 30)))
+            self.assertNotEqual(result.path, user_only.path)
+
+    def test_dedicated_endpoint_routes_studio_render(self):
         with TemporaryDirectory() as temporary:
             asset_id = "a" * 64
             directory = Path(temporary) / asset_id
@@ -142,17 +192,13 @@ class StudioTest(unittest.TestCase):
             )
             (directory / "metadata.json").write_text(metadata.model_dump_json(), encoding="utf-8")
 
-            class FakeRequest:
-                async def json(self):
-                    return {"type": "studio_render", "style": "light_studio"}
-
             with patch.dict("os.environ", {"STORAGE_ROOT": temporary, "GOOGLE_CLOUD_PROJECT": "test"}), patch(
                 "app.main.vertex_provider", return_value=MockGenerativeImageEditProvider()
             ), patch(
                 "app.main.GenerativeStudioRenderer.render",
                 return_value=RenderResult(result, False, "generative-studio", "passed", []),
             ) as render:
-                response = asyncio.run(customise(asset_id, FakeRequest()))
+                response = studio_render(asset_id, StudioRenderRequest(style="light_studio"))
 
             render.assert_called_once()
             self.assertEqual(response.headers["x-renderer-used"], "generative-studio")

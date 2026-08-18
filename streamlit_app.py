@@ -19,6 +19,7 @@ from app.renderers.generative_bumper import GenerativeBumperRenderer
 from app.renderers.generative_rim import GenerativeRimRenderer
 from app.renderers.generative_studio import GenerativeStudioRenderer
 from app.rim_analysis import store_rim_reference
+from app.studio_references import store_studio_reference
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
@@ -35,6 +36,9 @@ for key, value in {
     "pending_result_bytes": None,
     "pending_result_metadata": None,
     "pending_result_kind": None,
+    "studio_render_result": None,
+    "studio_render_identity": None,
+    "studio_render_source_hash": None,
 }.items():
     st.session_state.setdefault(key, value)
 
@@ -92,7 +96,7 @@ def set_pending(kind: str, result) -> None:
     st.session_state.pending_result_kind = kind
 
 
-single_tab, evaluation_tab = st.tabs(("Customise one image", "Evaluation gallery"))
+single_tab, studio_tab, evaluation_tab = st.tabs(("Customise one image", "Studio Render", "Evaluation gallery"))
 with single_tab:
     uploaded = st.file_uploader("Car photo", type=("jpg", "jpeg", "png", "webp"), key="car_photo")
     with st.form("process-car", border=False):
@@ -169,7 +173,7 @@ with single_tab:
                 icon=":material/download:",
                 disabled=working_bytes() is None,
             )
-        options = ["Paint", "Studio Render"]
+        options = ["Paint"]
         if metadata.available_modifications.bumper_replacement:
             options.append("Bumper replacement")
         if metadata.available_modifications.rim_replacement:
@@ -239,24 +243,6 @@ with single_tab:
                         set_pending("Bumper preview", result)
                     except PipelineError as exc:
                         st.error(f"{exc.detail} ({exc.code})")
-        elif mode == "Studio Render":
-            with st.form("studio-controls"):
-                studio_style = st.selectbox("Studio style", ("light_studio", "dark_studio", "premium_gradient"))
-                preserve_plate = st.checkbox("Preserve number plate", value=True)
-                studio_submitted = st.form_submit_button("Generate studio render", icon=":material/photo_camera:", type="primary")
-            if studio_submitted:
-                try:
-                    with st.status("Generating studio render", expanded=True) as status:
-                        result = GenerativeStudioRenderer(vertex_provider(GenerativeSettings.from_env())).render(
-                            directory=directory,
-                            metadata=metadata,
-                            modification=StudioRenderRequest(style=studio_style, preserve_plate=preserve_plate),
-                            base_image=working_base_image(),
-                        )
-                        status.update(label="Studio render complete", state="complete")
-                    set_pending("Studio Render", result)
-                except PipelineError as exc:
-                    st.error(f"{exc.detail} ({exc.code})")
         else:
             with st.container(border=True):
                 st.subheader("Rim replacement")
@@ -324,6 +310,169 @@ with single_tab:
             original_column, current_column = st.columns(2)
             original_column.image(st.session_state.composition_history[0]["image_bytes"], caption="Original", width="stretch")
             current_column.image(current, caption="Current composition", width="stretch")
+
+with studio_tab:
+    st.subheader("Four-view studio render")
+    view_names = ("front", "rear", "left", "right")
+    angled_upload = st.file_uploader(
+        "Three-quarter target (optional)",
+        type=("jpg", "jpeg", "png", "webp"),
+        key="studio_angled_photo",
+    )
+    if angled_upload is not None:
+        st.image(angled_upload.getvalue(), caption="Three-quarter target", width="content")
+    studio_uploads = {}
+    for column, view_name in zip(st.columns(4), view_names):
+        with column:
+            upload = st.file_uploader(
+                f"{view_name.capitalize()} view",
+                type=("jpg", "jpeg", "png", "webp"),
+                key=f"studio_{view_name}_photo",
+            )
+            studio_uploads[view_name] = upload
+            if upload is not None:
+                st.image(upload.getvalue(), caption=view_name.capitalize(), width="stretch")
+
+    studio_sources = {
+        view_name: upload.getvalue()
+        for view_name, upload in studio_uploads.items()
+        if upload is not None
+    }
+    angled_source = angled_upload.getvalue() if angled_upload is not None else None
+    all_views_ready = len(studio_sources) == len(view_names)
+    all_sources = (*studio_sources.values(), *((angled_source,) if angled_source else ()))
+    oversized = any(len(source) > MAX_UPLOAD_BYTES for source in all_sources)
+    source_digest = None
+    if all_views_ready:
+        digest = hashlib.sha256()
+        for view_name in view_names:
+            digest.update(view_name.encode())
+            digest.update(studio_sources[view_name])
+        if angled_source:
+            digest.update(b"angled")
+            digest.update(angled_source)
+        source_digest = digest.hexdigest()
+    if oversized:
+        st.error("Each image must be 20 MB or smaller.")
+
+    with st.form("standalone-studio-controls"):
+        target_options = (("angled",) + view_names) if angled_source else view_names
+        target_view = st.selectbox(
+            "Target view",
+            target_options,
+            format_func=lambda value: "Three-quarter" if value == "angled" else value.capitalize(),
+        )
+        studio_style = st.selectbox(
+            "Studio style",
+            ("light_studio", "dark_studio", "premium_gradient"),
+            key="standalone_studio_style",
+        )
+        preserve_plate = st.checkbox(
+            "Preserve number plate", value=True, key="standalone_studio_preserve_plate"
+        )
+        studio_submitted = st.form_submit_button(
+            "Generate studio render",
+            icon=":material/photo_camera:",
+            type="primary",
+            disabled=not all_views_ready or oversized,
+        )
+
+    if studio_submitted and source_digest:
+        try:
+            with st.status("Preparing four-view studio render", expanded=True) as status:
+                settings = Settings.from_env()
+                target_source = angled_source if target_view == "angled" else studio_sources[target_view]
+                metadata = process_view(
+                    target_source,
+                    settings,
+                    "auto" if target_view == "angled" else target_view,
+                )
+                directory = Path(settings.storage_root) / metadata.asset_id
+                status.update(label="Analyzing vehicle identity from supplied views")
+                provider = vertex_provider(GenerativeSettings.from_env())
+                reference_views = view_names if target_view == "angled" else tuple(
+                    view for view in view_names if view != target_view
+                )
+                identity_images = []
+                for source in (target_source, *(studio_sources[view] for view in reference_views)):
+                    with Image.open(BytesIO(source)) as opened:
+                        identity_images.append(opened.convert("RGB"))
+                identity = provider.identify_vehicle(identity_images)
+                references = [
+                    store_studio_reference(
+                        directory=directory,
+                        source=studio_sources[view_name],
+                        kind="user",
+                        title=f"{view_name.capitalize()} view",
+                    )
+                    for view_name in reference_views
+                ]
+                status.update(label="Generating studio render")
+                result = GenerativeStudioRenderer(provider).render(
+                    directory=directory,
+                    metadata=metadata,
+                    modification=StudioRenderRequest(
+                        style=studio_style,
+                        preserve_plate=preserve_plate,
+                        vehicle_identity=identity,
+                        reference_asset_ids=[reference.reference_asset_id for reference in references],
+                    ),
+                )
+                st.session_state.studio_render_result = {
+                    "image_bytes": Path(result.path).read_bytes(),
+                    "target_view": target_view,
+                    "quality_status": result.quality_status,
+                    "warnings": result.warnings,
+                    "cached": result.cached,
+                }
+                st.session_state.studio_render_identity = identity.model_dump(mode="json")
+                st.session_state.studio_render_source_hash = source_digest
+                status.update(label="Studio render complete", state="complete")
+        except PipelineError as exc:
+            st.error(f"{exc.detail} ({exc.code})")
+        except (OSError, ValueError) as exc:
+            st.error(f"Could not prepare these four views: {exc}")
+
+    studio_result = st.session_state.studio_render_result
+    if (
+        studio_result
+        and source_digest
+        and st.session_state.studio_render_source_hash == source_digest
+    ):
+        identity = st.session_state.studio_render_identity
+        if identity:
+            st.caption(
+                f"Detected: {identity['make']} {identity['model']} · {identity['generation']} · "
+                f"{identity['body_style']} · {identity['confidence']:.0%} confidence"
+            )
+        original_column, result_column = st.columns(2)
+        target_source = (
+            angled_source
+            if studio_result["target_view"] == "angled"
+            else studio_sources[studio_result["target_view"]]
+        )
+        original_column.image(
+            target_source,
+            caption=(
+                "Three-quarter target"
+                if studio_result["target_view"] == "angled"
+                else f"{studio_result['target_view'].capitalize()} target"
+            ),
+            width="stretch",
+        )
+        result_column.image(studio_result["image_bytes"], caption="Studio Render", width="stretch")
+        result_column.download_button(
+            "Download studio PNG",
+            studio_result["image_bytes"],
+            file_name="studio-render.png",
+            mime="image/png",
+            icon=":material/download:",
+        )
+        st.success(f"Quality check: {studio_result['quality_status'].replace('_', ' ')}")
+        if studio_result["cached"]:
+            st.caption("Loaded from cache")
+        for warning in studio_result["warnings"]:
+            st.warning(warning)
 
 with evaluation_tab:
     report_path = Path("evaluation/report.json")

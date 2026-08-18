@@ -26,6 +26,11 @@ from app.renderers.generative_rim import GenerativeRimRenderer
 from app.renderers.generative_studio import GenerativeStudioRenderer
 from app.rim_analysis import store_rim_reference
 from app.schemas import AssetBundle, ViewSelection
+from app.studio_references import (
+    StudioIdentityResponse,
+    load_studio_reference,
+    store_studio_reference,
+)
 
 app = FastAPI(title="Car Customisation API", version="0.1.0")
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -172,6 +177,75 @@ def upload_rim_reference(
     return store_rim_reference(directory=directory, metadata=metadata, source=source)
 
 
+@app.post("/cars/{asset_id}/studio-identity", response_model=StudioIdentityResponse)
+def analyse_studio_identity(
+    asset_id: str,
+    images: list[UploadFile] | None = File(default=None),
+) -> StudioIdentityResponse:
+    """Identify the target car from its original and up to four supporting views."""
+
+    directory, metadata = _asset(asset_id)
+    uploads = images or []
+    if len(uploads) > 4:
+        raise PipelineError("invalid_studio_reference", "At most four supporting images are allowed", 400)
+    stored = []
+    for upload in uploads:
+        stored.append(
+            store_studio_reference(
+                directory=directory,
+                source=upload.file.read(MAX_UPLOAD_BYTES + 1),
+                kind="user",
+                title=upload.filename or "Supporting vehicle view",
+            )
+        )
+    try:
+        with Image.open(directory / metadata.original_image) as opened:
+            identity_images = [opened.convert("RGB")]
+        for reference in stored:
+            path, _ = load_studio_reference(directory, reference.reference_asset_id)
+            with Image.open(path) as opened:
+                identity_images.append(opened.convert("RGB"))
+    except OSError as exc:
+        raise PipelineError("invalid_stored_assets", "A vehicle identity image is unreadable", 500) from exc
+    identity = vertex_provider(GenerativeSettings.from_env()).identify_vehicle(identity_images)
+    return StudioIdentityResponse(
+        identity=identity,
+        reference_asset_ids=[reference.reference_asset_id for reference in stored],
+    )
+
+
+@app.get("/cars/{asset_id}/studio-references/{reference_id}")
+def get_studio_reference(asset_id: str, reference_id: str) -> FileResponse:
+    directory, _ = _asset(asset_id)
+    path, _ = load_studio_reference(directory, reference_id)
+    return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+
+def _render_response(result) -> FileResponse:
+    return FileResponse(
+        result.path,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Render-Cached": str(result.cached).lower(),
+            "X-Renderer-Used": result.renderer,
+            "X-Quality-Status": result.quality_status,
+            "X-Quality-Warnings": ",".join(result.warnings),
+        },
+    )
+
+
+@app.post("/cars/{asset_id}/studio-render")
+def studio_render(asset_id: str, modification: StudioRenderRequest) -> FileResponse:
+    """Render one prepared target using optional user-supplied vehicle views."""
+
+    directory, metadata = _asset(asset_id)
+    result = GenerativeStudioRenderer(vertex_provider(GenerativeSettings.from_env())).render(
+        directory=directory, metadata=metadata, modification=modification
+    )
+    return _render_response(result)
+
+
 @app.post("/cars/{asset_id}/customise")
 async def customise(asset_id: str, request: Request) -> FileResponse:
     """Validate a deterministic paint edit and return its PNG."""
@@ -191,21 +265,9 @@ async def customise(asset_id: str, request: Request) -> FileResponse:
             directory=directory, metadata=metadata, modification=modification
         )
     elif isinstance(modification, StudioRenderRequest):
-        result = GenerativeStudioRenderer(vertex_provider(GenerativeSettings.from_env())).render(
-            directory=directory, metadata=metadata, modification=modification
-        )
+        raise PipelineError("invalid_modification", "Use the dedicated studio-render endpoint", 400)
     else:
         result = GenerativeRimRenderer(vertex_provider(GenerativeSettings.from_env())).render(
             directory=directory, metadata=metadata, modification=modification
         )
-    return FileResponse(
-        result.path,
-        media_type="image/png",
-        headers={
-            "Cache-Control": "no-store",
-            "X-Render-Cached": str(result.cached).lower(),
-            "X-Renderer-Used": result.renderer,
-            "X-Quality-Status": result.quality_status,
-            "X-Quality-Warnings": ",".join(result.warnings),
-        },
-    )
+    return _render_response(result)
